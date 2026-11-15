@@ -13,15 +13,8 @@ void Ionization::doIt(Track& track, const Material& material, double stepLength,
     // 2. Relativistic Kinematics Calculation
     double mass = track.getParticleDefinition()->getMass();
     double kinEnergy = track.getKineticEnergy();
-    
-    // Lorentz factor (gamma) = E_total / mass = (E_k + mass) / mass
-    double gamma = (kinEnergy / mass) + 1.0;
-    
-    // Velocity squared (beta^2) = 1 - (1 / gamma^2)
-    double betaSq = 1.0 - (1.0 / (gamma * gamma));
-
-    // Prevent division by zero if the particle is almost stopped
-    betaSq = std::max(betaSq, 0.0001); 
+    double betaSq = std::pow(track.getBeta(), 2);
+    double gamma = track.getGamma();
 
     // 3. Simplified Bethe-Bloch dE/dx
     // Proportional to material density and inversely proportional to beta^2.

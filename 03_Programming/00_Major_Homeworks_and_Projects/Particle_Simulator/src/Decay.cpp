@@ -1,4 +1,6 @@
 #include "Decay.h"
+#include "PhysicalConstants.h"
+
 #include <iostream>
 #include <cmath>
 #include <random> // Added for std::random_device and distributions
@@ -14,12 +16,11 @@ void Decay::doIt(Track& track, const Material& material, double stepLength, std:
     // ==========================================================================
     // 1. RELATIVISTIC KINEMATICS & TIME FACTOR
     // ==========================================================================
-    double mass = track.getParticleDefinition()->getMass();
-    double gamma = (track.getKineticEnergy() / mass) + 1.0;
-    double beta = std::sqrt(1.0 - (1.0 / (gamma * gamma)));
-    
-    // dt is time spent in this step. Assuming c = 30 cm/ns.
-    double dt = stepLength / (beta * 30.0);
+    double beta = track.getBeta();
+    double gamma = track.getGamma();
+
+    // dt is time spent in this step. c = 29.9792458 cm/ns.
+    double dt = stepLength / (beta * PhysicalConstants::c);
     
     // Exponential decay probability including relativistic time dilation (gamma * lifetime)
     double probability = 1.0 - std::exp(-dt / (gamma * lifetime));
@@ -44,13 +45,12 @@ void Decay::doIt(Track& track, const Material& material, double stepLength, std:
         // ==========================================================================
         // Assign remaining kinetic energy to the secondary (Simplified toy physics)
         double productKinEnergy = track.getKineticEnergy() * 0.8; // e.g., Neutrinos carry 20% away
-        double productMomentumMag = productKinEnergy; // Approx E ~ p for highly relativistic electrons
         
         // Create momentum vector from spherical coordinates
-        Vector3D productMomentum = Vector3D::fromSpherical(productMomentumMag, theta, phi);
+        Vector3D productDirection = Vector3D::fromSpherical(1.0, theta, phi);
 
         // Create the secondary track and push to the stack
-        Track secondaryTrack(decayProductDef, track.getPosition(), productMomentum, productKinEnergy);
+        Track secondaryTrack(decayProductDef, track.getPosition(), productDirection, productKinEnergy);
         secondaries.push_back(secondaryTrack);
 
         std::cout << "    [" << processName << "] Spawned Secondary: " << decayProductDef->getName() 

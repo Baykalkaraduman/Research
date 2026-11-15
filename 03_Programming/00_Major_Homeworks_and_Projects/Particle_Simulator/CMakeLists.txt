@@ -5,6 +5,7 @@ project(ToyMonteCarlo CXX)
 # 2. Modern C++ Standard (Required for smart pointers and ROOT 6+)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ==============================================================================
 # 3. ROOT INTEGRATION

@@ -1,5 +1,6 @@
 #include "RunManager.h"
 #include "Material.h" // Required for the static Vacuum material
+#include "PhysicalConstants.h" // Required for speed of light
 #include <iostream>
 
 // ==========================================================================
@@ -101,34 +102,24 @@ void RunManager::simulateEvent(const Track& primaryTrack, double stepLength, int
             // =========================================================
             if (!currentTrack.getTrackStatus() && analysisManager != nullptr) {
                 analysisManager->fillDecayPosition(currentTrack.getPosition().z);
-                analysisManager->fillTimeOfFlight(currentTrack.getTime());
+                analysisManager->fillTimeOfFlight(currentTrack.getGlobalTime());
             }
-
+            // =========================================================
+            // 4. PUSH SECONDARIES TO THE TRACK STACK
+            // =========================================================
             // If any secondaries were produced, push them onto the global stack
             for (const auto& sec : stepSecondaries) {
                 trackStack.push_back(sec);
             }
-
-            // Only move if the particle survived the physics processes
+            
+            // =========================================================
+            // 5. TRANSPORT: ADVANCE POSITION AND TIME (alive tracks only)
+            // =========================================================
             if (currentTrack.getTrackStatus()) {
-                // Advance position based on momentum direction
-                Vector3D pos = currentTrack.getPosition();
-                Vector3D mom = currentTrack.getMomentum();
-                double p = mom.mag();
-                
-                if (p > 0.0) {
-                    // Normalize momentum to get direction, multiply by step length
-                    Vector3D newPos(
-                        pos.x + (mom.x / p) * stepLength,
-                        pos.y + (mom.y / p) * stepLength,
-                        pos.z + (mom.z / p) * stepLength
-                    );
-                    currentTrack.updatePosition(newPos);
-                    
-                    // Advance time accurately based on velocity (approximated as momentum 'p' for this toy model)
-                    double dt = stepLength / p; 
-                    currentTrack.addTime(dt); 
-                }
+                Vector3D newPos = currentTrack.getPosition() + currentTrack.getDirection()*stepLength;
+                currentTrack.updatePosition(newPos);
+                double dt = stepLength / (currentTrack.getBeta() * PhysicalConstants::c);
+                currentTrack.addTime(dt);
             }
             stepCounter++;
         }

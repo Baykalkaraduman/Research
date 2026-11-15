@@ -15,6 +15,15 @@ or edit code here.**
 - Commits in this repository must not carry a `Co-Authored-By: Claude` line,
   because I am the only contributor.
 
+## My C++ style (follow it in suggestions and reviews)
+
+- One-line functions (getters, setters, small utilities) are defined in the
+  header, inside the class body. Everything longer goes in the `.cpp` file.
+  When you suggest code changes, say which of the two places each function
+  belongs in under this rule.
+- Names follow Geant4 conventions where one exists, in camelCase
+  (`getMomentum()`, `getMomentumMag()`, `getDirection()`).
+
 Background: earlier AI-assisted work (the extended Particle_Simulator,
 ParticleSim, Chat_Analysis, the Python course notebooks) was moved to Studies
 on 2026-11-14, and removed from this repository's history.
