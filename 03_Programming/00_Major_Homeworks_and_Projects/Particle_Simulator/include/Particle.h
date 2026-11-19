@@ -22,18 +22,21 @@ public:
     Particle(int p_pdg_id, std::string p_name, double p_mass, double p_charge, double p_spin, double p_lifetime);
 
     // ==========================================================================
-    // CRITICAL: Virtual Destructor
+    // Virtual Destructor
     // Required for safe polymorphic deletion of derived classes.
     // ==========================================================================
     virtual ~Particle() = default; 
 
+    // ==============================================================================
     // Getters
-    int getPdgId() const;
-    std::string getName() const;
-    double getMass() const;
-    double getCharge() const;
-    double getSpin() const;
-    double getLifetime() const;
+    // ==============================================================================
+    int getPdgId() const {return pdg_id;}
+    std::string getName() const {return name;}
+    double getMass() const {return mass;}
+    double getCharge() const {return charge;}
+    double getSpin() const {return spin;}
+    double getLifetime() const {return lifetime;}
+
     
     // Utility method to check if the particle decays
     bool isStable() const;

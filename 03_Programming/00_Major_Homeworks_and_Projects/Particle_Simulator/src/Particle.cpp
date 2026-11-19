@@ -2,30 +2,17 @@
 #include <iomanip> // For std::setprecision
 
 // ==============================================================================
-// Constructor Implementation
+// Constructor
 // Using Member Initializer Lists for optimal performance and std::move for strings.
 // ==============================================================================
 Particle::Particle(int p_pdg_id, std::string p_name, double p_mass, double p_charge, double p_spin, double p_lifetime)
-    : pdg_id(p_pdg_id), name(std::move(p_name)), mass(p_mass), charge(p_charge), spin(p_spin), lifetime(p_lifetime) 
-{
-    // Body is empty because initialization is handled in the list above.
-}
-
-// ==============================================================================
-// Getter Implementations
-// ==============================================================================
-int Particle::getPdgId() const { return pdg_id; }
-std::string Particle::getName() const { return name; }
-double Particle::getMass() const { return mass; }
-double Particle::getCharge() const { return charge; }
-double Particle::getSpin() const { return spin; }
-double Particle::getLifetime() const { return lifetime; }
+    : pdg_id(p_pdg_id), name(std::move(p_name)), mass(p_mass), charge(p_charge), spin(p_spin), lifetime(p_lifetime) {}
 
 // ==============================================================================
 // Utility Implementation
 // ==============================================================================
 bool Particle::isStable() const {
-    // By convention in our toy model, a negative lifetime implies stability.
+    // For convention, a negative lifetime implies stability.
     return lifetime < 0.0; 
 }
 

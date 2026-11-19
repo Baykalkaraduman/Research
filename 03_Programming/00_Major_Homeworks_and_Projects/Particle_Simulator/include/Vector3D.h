@@ -63,6 +63,9 @@ struct Vector3D {
     // Subtracting Vectors from each other
     Vector3D operator-(const Vector3D& v) const {return Vector3D(x-v.x, y-v.y, z-v.z);}
 
+    // Rotate this vector from the frame where newUz is the z axis to the global frame. newUz must be a unit vector.
+    Vector3D& rotateUz(const Vector3D& newUz);
+
     void display() const {
         std::cout << "(" << x << ", " << y << ", " << z << ")";
     }

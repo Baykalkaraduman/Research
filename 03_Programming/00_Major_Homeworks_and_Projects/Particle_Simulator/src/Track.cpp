@@ -10,7 +10,7 @@ Track::Track(const Particle* pDef, const Vector3D& initPos, const Vector3D& init
       direction(initDirection.unit()), 
       kineticEnergy(initKinEnergy), 
       globalTime(0.0), 
-      isAlive(true) 
+      trackStatus(TrackStatus::trackAlive)
 {
     // The track starts at global time t = 0.0 with the given initial kinematics.
 }
@@ -23,7 +23,7 @@ void Track::deductEnergy(double energyLoss) {
     // If kinetic energy drops to zero or below, the particle stops.
     if (kineticEnergy <= 0.0) {
         kineticEnergy = 0.0;
-        killTrack();
+        trackStatus = TrackStatus::trackStopButAlive;
     }
 }
 
@@ -31,7 +31,7 @@ void Track::deductEnergy(double energyLoss) {
 // Display Utility
 // ==============================================================================
 void Track::displayState() const {
-    std::cout << "  [Track State] Time: " << globalTime << " ns | Alive: " << (isAlive ? "Yes" : "No") << "\n";
+    std::cout << "  [Track State] Time: " << globalTime << " ns | Alive: " << (isAlive() ? "Yes" : "No") << "\n";
     std::cout << "  -> Position : "; position.display(); std::cout << " cm\n";
     std::cout << "  -> Direction : "; direction.display(); std::cout << "\n";
     std::cout << "  -> KinEnergy: " << kineticEnergy << " GeV\n";

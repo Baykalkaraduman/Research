@@ -9,6 +9,12 @@
 // Holds dynamic state (position, direction, time) and a pointer to static properties.
 // Equivalent to G4Track in Geant4.
 // ==============================================================================
+enum class TrackStatus {
+    trackAlive,         // Track is alive and the observed
+    trackKill,          // Track is killed, stop observing
+    trackStopButAlive   // Particle is at rest, waits for the next process (e.g. Annihilation)
+};
+
 class Track {
 private:
     // Pointer to the immutable physical properties of the particle type.
@@ -16,13 +22,14 @@ private:
     const Particle* particleDefinition; 
 
     // Dynamic Kinematic State
-    Vector3D position;      // Position in 3D space (e.g., cm or mm)
-    Vector3D direction;     // Direction of the particle
-    double kineticEnergy;   // Kinetic energy (GeV)
-    double globalTime;      // Time since the start of the event (ns)
+    Vector3D position;          // Position in 3D space (e.g., cm or mm)
+    Vector3D direction;         // Direction of the particle
+    double kineticEnergy;       // Kinetic energy (GeV)
+    double globalTime;          // Time since the start of the event (ns)
+    double trackLength = 0.0;   // Distance travelled so far by the particle (cm)
     
     // Status flag
-    bool isAlive;           // True if particle is moving, False if it stopped/decayed
+    TrackStatus trackStatus;          // Shows whether particle is alive or not
 
 public:
     // Constructor requires the particle definition and initial kinematics
@@ -31,12 +38,16 @@ public:
     // ==============================================================================
     // Getters
     // ==============================================================================
-        const Particle* getParticleDefinition() const {return particleDefinition;}
-        Vector3D getPosition() const {return position;}
-        Vector3D getDirection() const {return direction;}
-        double getKineticEnergy() const {return kineticEnergy;}
-        bool getTrackStatus() const {return isAlive;}
-        double getGlobalTime() const {return globalTime;}
+    const Particle* getParticleDefinition() const {return particleDefinition;}
+    Vector3D getPosition() const {return position;}
+    Vector3D getDirection() const {return direction;}
+    double getKineticEnergy() const {return kineticEnergy;}
+    TrackStatus getTrackStatus() const {return trackStatus;}
+    double getGlobalTime() const {return globalTime;}
+    double getTrackLength() const {return trackLength;}
+    
+    // Tells whether the particle is alive or not
+    bool isAlive() const {return trackStatus == TrackStatus::trackAlive;}
 
     // --------------------------------------------------------------------
     // Getters for Derived Parameters
@@ -59,19 +70,26 @@ public:
     // Gamma γ = E / m
     double getGamma() const {return getTotalEnergy() / getMass();} // Don't need for massles particles and don't use it because of zero division
 
+    // Beta * Gamma = β * γ = |p| / m
+    double getBetaGamma() const {return getMomentumMag() / getMass();}
+
     // ==========================================================================
     // Setters / Updaters (Called by physics processes and stepping manager)
     // ==========================================================================
     void setDirection(const Vector3D& newDirection) {direction = newDirection.unit();}
+    void setTrackStatus(TrackStatus status) {trackStatus = status;}
     void addTime(double deltaTime) {globalTime += deltaTime;}
+    void addTrackLength(double length) {trackLength += length;}
     void deductEnergy(double energyLoss);
     void updatePosition(const Vector3D& newPos) {position = newPos;}
+    void setKineticEnergy(double energy) {kineticEnergy = energy;}
 
     // ==========================================================================
     // Utility
     // ==========================================================================
+
     // Kill the track (e.g., when it hits a wall, loses all energy, or decays)
-    void killTrack() {isAlive = false;}
+    void killTrack() {trackStatus = TrackStatus::trackKill;}
 
     // Display track state
     void displayState() const;

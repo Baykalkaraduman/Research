@@ -13,10 +13,10 @@
 class Volume {
 protected:
     std::string name;
-    
+
     // We use shared_ptr because multiple volumes can share the exact same Material object.
     // This prevents memory duplication (Flyweight pattern).
-    std::shared_ptr<Material> material; 
+    std::shared_ptr<Material> material;
 
 public:
     Volume(std::string volName, std::shared_ptr<Material> mat)
@@ -26,11 +26,19 @@ public:
     virtual ~Volume() = default;
 
     // ==========================================================================
-    // PURE VIRTUAL FUNCTION (= 0)
+    // PURE VIRTUAL FUNCTIONS (= 0)
     // Any derived class (like Box or Cylinder) MUST implement this logic.
-    // It returns true if a given point in 3D space is inside this volume.
     // ==========================================================================
+    // It returns true if a given point in 3D space is inside this volume.
     virtual bool isInside(const Vector3D& point) const = 0;
+
+    // Distance from a point OUTSIDE, along unit direction v, to the surface.
+    // kInfinity if the ray misses the volume. (G4VSolid::DistanceToIn(p, v))
+    virtual double distanceToIn(const Vector3D& p, const Vector3D& v) const = 0;
+
+    // Distance from a point INSIDE, along unit direction v, to the surface.
+    // (G4VSolid::DistanceToOut(p, v))
+    virtual double distanceToOut(const Vector3D& p, const Vector3D& v) const = 0;
 
     // Getters
     std::string getName() const { return name; }

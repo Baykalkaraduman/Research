@@ -5,12 +5,11 @@
 
 // ==============================================================================
 // Derived Class: Box
-// Represents a rectangular cuboid volume centered at the origin.
-// Equivalent to G4Box.
+// Represents a rectengular prisim shaped volume
 // ==============================================================================
 class Box : public Volume {
 private:
-    // Geant4 standard: using half-lengths (hx, hy, hz) from the center.
+    // Using half-lengths (hx, hy, hz) from the center.
     // A box with hx=5 cm has a total width of 10 cm (-5 to +5).
     double hx, hy, hz;
 
@@ -25,11 +24,14 @@ public:
     // ==========================================================================
     bool isInside(const Vector3D& point) const override {
         // If the point is exactly on the boundary, we consider it inside (<=)
-        if (std::abs(point.x) <= hx && 
-            std::abs(point.y) <= hy && 
+        if (std::abs(point.x) <= hx &&
+            std::abs(point.y) <= hy &&
             std::abs(point.z) <= hz) {
             return true;
         }
         return false;
     }
+
+    double distanceToIn(const Vector3D& p, const Vector3D& v) const override;
+    double distanceToOut(const Vector3D& p, const Vector3D& v) const override;
 };
