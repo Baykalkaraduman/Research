@@ -170,14 +170,22 @@ const Ionization::RangeTable& Ionization::getRangeTable(const Particle& particle
     table.lnEnergyMin = std::log(tableEnergyMin);
     table.dLnEnergy = std::log(tableEnergyMax / tableEnergyMin) / nBins;
     table.range.resize(nBins + 1);
+    table.slope.resize(nBins + 1);
 
-    double previous = tableEnergyMin / computeDEDX(particle, tableEnergyMin, material); // T / S(T)
-    table.range[0] = 2.0 * previous;
+
+    auto slope = [&](double lnEnergy) {
+        const double energy = std::exp(lnEnergy);
+        return energy / computeContinuousDEDX(particle, energy, material);
+    };
+
+    table.slope[0] = slope(table.lnEnergyMin);
+    table.range[0] = 2.0 * table.slope[0];
+
     for (int i = 1; i <= nBins; ++i) {
-        const double energy = std::exp(table.lnEnergyMin + i * table.dLnEnergy);
-        const double current = energy / computeDEDX(particle, energy, material);
-        table.range[i] = table.range[i - 1] + 0.5 * (previous + current) * table.dLnEnergy;
-        previous = current;
+        const double lnEnergy = table.lnEnergyMin + i * table.dLnEnergy;
+        table.slope[i] = slope(lnEnergy);
+        const double middle = slope(lnEnergy - 0.5 * table.dLnEnergy);
+        table.range[i] = table.range[i - 1] + table.dLnEnergy / 6.0 * (table.slope[i - 1] + 4.0 * middle + table.slope[i]);
     }
 
     if (verboseLevel > 0) {
@@ -186,10 +194,24 @@ const Ionization::RangeTable& Ionization::getRangeTable(const Particle& particle
     }
     return rangeTables.emplace(key, std::move(table)).first->second;
 }
+namespace {
 
-// R(T): linear interpolation in ln(T)
+double hermite(double r0, double m0, double r1, double m1, double f) {
+    const double f2 = f * f, f3 = f2 * f;
+    return (2.0 * f3 - 3.0 * f2 + 1.0) * r0 + (f3 - 2.0 * f2 + f) * m0 + (-2.0 * f3 + 3.0 * f2) * r1 + (f3 - f2) * m1;
+}
+
+double hermiteDerivative(double r0, double m0, double r1, double m1, double f) {
+    const double f2 = f * f;
+    return (6.0 * f2 - 6.0 * f) * r0 + (3.0 * f2 - 4.0 * f + 1.0) * m0 + (-6.0 * f2 + 6.0 * f) * r1 + (3.0 * f2 - 2.0 * f) * m1;
+}
+
+} // namespace
+
+
+// Using Hermite
 double Ionization::getRange(const Particle& particle, double kineticEnergy, const Material& material) {
-    if (computeDEDX(particle, tableEnergyMin, material) <= 0.0) {
+    if (computeContinuousDEDX(particle, tableEnergyMin, material) <= 0.0) {
         return GeoDefs::kInfinity; // vacuum
     }
     const RangeTable& table = getRangeTable(particle, material);
@@ -198,13 +220,15 @@ double Ionization::getRange(const Particle& particle, double kineticEnergy, cons
         return table.range.front() * std::sqrt(kineticEnergy / tableEnergyMin); // R ~ sqrt(T) there
     }
     if (kineticEnergy >= tableEnergyMax) {
-        return table.range.back() + (kineticEnergy - tableEnergyMax) / computeDEDX(particle, tableEnergyMax, material);
+        return table.range.back() + (kineticEnergy - tableEnergyMax) / computeContinuousDEDX(particle, tableEnergyMax, material);
     }
 
     const double position = (std::log(kineticEnergy) - table.lnEnergyMin) / table.dLnEnergy;
     const int bin = std::min(static_cast<int>(position), static_cast<int>(table.range.size()) - 2);
     const double fraction = position - bin;
-    return table.range[bin] + fraction * (table.range[bin + 1] - table.range[bin]);
+    // Hermite, was table.range[bin] + fraction * (table.range[bin + 1] - table.range[bin])
+    const double h = table.dLnEnergy;
+    return hermite(table.range[bin], h * table.slope[bin], table.range[bin + 1], h * table.slope[bin + 1], fraction);
 }
 
 // T(R): the exact inverse of the interpolation above
@@ -216,13 +240,21 @@ double Ionization::getKineticEnergyFromRange(const Particle& particle, double ra
         return tableEnergyMin * ratio * ratio;
     }
     if (range >= table.range.back()) {
-        return tableEnergyMax + (range - table.range.back()) * computeDEDX(particle, tableEnergyMax, material);
+        return tableEnergyMax + (range - table.range.back()) * computeContinuousDEDX(particle, tableEnergyMax, material);
     }
 
     // R grows with T, so the table is sorted: binary search for the bin
     const auto upper = std::upper_bound(table.range.begin(), table.range.end(), range);
     const int bin = static_cast<int>(upper - table.range.begin()) - 1;
-    const double fraction = (range - table.range[bin]) / (table.range[bin + 1] - table.range[bin]);
+    const double h = table.dLnEnergy;
+    const double r0 = table.range[bin], r1 = table.range[bin + 1];
+    const double m0 = h * table.slope[bin], m1 = h * table.slope[bin + 1];
+    double fraction = (range - r0) / (r1 - r0);
+    for (int iteration = 0; iteration < 20; ++iteration) {
+        const double step = (hermite(r0, m0, r1, m1, fraction) - range) / hermiteDerivative(r0, m0, r1, m1, fraction);
+        fraction = std::min(1.0, std::max(0.0, fraction - step));
+        if (std::abs(step) < 1e-15) break;
+    }
     return std::exp(table.lnEnergyMin + (bin + fraction) * table.dLnEnergy);
 }
 
@@ -262,7 +294,7 @@ void Ionization::alongStepDoIt(Track& track, const Material& material, double st
         energyLoss = kineticEnergy; // the step reaches the end of the range: stop here
     } else {
         // Short step: dE/dx is nearly constant over it
-        energyLoss = computeDEDX(particle, kineticEnergy, material) * stepLength;
+        energyLoss = computeContinuousDEDX(particle, kineticEnergy, material) * stepLength;
 
         // Long step: dE/dx grows as the particle slows down, so dE/dx * step
         // underestimates the loss. Use the range table instead: after the step the
@@ -289,7 +321,7 @@ void Ionization::alongStepDoIt(Track& track, const Material& material, double st
     if (verboseLevel > 0) {
         std::cout << "    [" << processName << "] Active! "
                   << "Loss: " << energyLoss << " GeV (dE/dx: "
-                  << computeDEDX(particle, kineticEnergy, material) << " GeV/cm)\n";
+                  << computeContinuousDEDX(particle, kineticEnergy, material) << " GeV/cm)\n";
     }
 
     track.deductEnergy(energyLoss);
@@ -325,6 +357,7 @@ double Ionization::sampleFluctuations(const Particle& particle, double kineticEn
     const double gamma = 1.0 + kineticEnergy / mass;
     const double beta2 = 1.0 - 1.0 / (gamma * gamma);
     const double tmax = std::min(computeMaxSecondaryEnergy(particle, kineticEnergy), kineticEnergy);
+    const double tUp = std::min(tmax, deltaRayCut);
 
     const double xi = 0.5 * K * charge * charge * material.getZoverA() * material.getDensity() * stepLength / beta2;
 
@@ -352,7 +385,7 @@ double Ionization::sampleFluctuations(const Particle& particle, double kineticEn
     if (fluctuationModel == FluctuationModel::landau) {
         const double lambdaPeak = -0.22278;
         const double mostProbableLoss = computeMostProbableLoss(particle, kineticEnergy, material, stepLength);
-        const double lambdaMax = lambdaPeak + (tmax - mostProbableLoss) / xi;
+        const double lambdaMax = lambdaPeak + (tUp - mostProbableLoss) / xi;
         if (lambdaMax >= 10.0) {
             const double loss = sampleLandauLoss(meanLoss, xi, lambdaMax);
             // The left side of a Landau is short but not zero: very rarely the
@@ -364,7 +397,7 @@ double Ionization::sampleFluctuations(const Particle& particle, double kineticEn
     // ------------------------------------------------------------------
     // GAUSS (Bohr)
     // ------------------------------------------------------------------
-    const double sigma2 = xi * tmax * (1.0 - 0.5 * beta2);
+    const double sigma2 = xi * tUp * (1.0 - 0.5 * beta2 * tUp / tmax);
     double loss;
     if (meanLoss * meanLoss > 4.0 * sigma2) {
         // mean > 2 sigma: a Gaussian, cut SYMMETRICALLY to [0, 2 mean] so the
@@ -474,3 +507,348 @@ double Ionization::sampleLandauLoss(double meanLoss, double xi, double lambdaMax
     const double lambda = ROOT::Math::landau_quantile(u);
     return meanLoss + xi * (lambda - truncatedMean(lambdaMax));
 }
+// ==============================================================================
+// Delta rays
+// ==============================================================================
+// Notation: T, E = kinetic and total energy of the incident particle, T' = kinetic
+// energy given to the electron, eps = T'/T (for e-, e+). Every cross section is
+// written as
+//     dsigma/dT' = P z(T') / T'^2,     P = (K/2) z^2 (Z/A) rho / beta^2
+// P / T'^2 is Rutherford scattering on a free electron ((K/2)(Z/A) rho is
+// 2 pi r_e^2 m_e c^2 times the electron density), z(T') ~ 1 is the correction for
+// spin, recoil and (for e-) identical particles. Then, in closed form below:
+//     sigma(T_cut)  = P integral z / T'^2 dT'     number of delta rays per cm
+//     dE/dx_hard    = P integral z / T'  dT'     energy they carry per cm
+// integrated from T_cut to Tmax.
+namespace {
+
+// Bhabha's coefficients, y = 1 / (gamma + 1) (G4MollerBhabhaModel)
+struct BhabhaCoefficients {
+    double b1, b2, b3, b4;
+    explicit BhabhaCoefficients(double gamma) {
+        const double y = 1.0 / (1.0 + gamma);
+        const double y12 = 1.0 - 2.0 * y;
+        b1 = 2.0 - y * y;
+        b2 = y12 * (3.0 + y * y);
+        b4 = y12 * y12 * y12;
+        b3 = b4 + y12 * y12;
+    }
+};
+
+} // namespace
+
+double Ionization::computeDeltaRayPrefactor(const Particle& particle, double kineticEnergy, const Material& material) {
+    const double mass = particle.getMass();
+    const double charge = particle.getCharge();
+    const double betaGamma2 = kineticEnergy * (kineticEnergy + 2.0 * mass) / (mass * mass);
+    const double beta2 = betaGamma2 / (1.0 + betaGamma2);
+    return 0.5 * K * charge * charge * material.getZoverA() * material.getDensity() / beta2;
+}
+
+// ------------------------------------------------------------------------------
+// The shape z(T')
+// ------------------------------------------------------------------------------
+//   heavy, spin 0 or 1/2 (PDG eq. 34.6):  z = 1 - beta^2 T'/Tmax  [+ T'^2 / (2 E^2) for spin 1/2]
+//   Moller (e- e-), g = (2 gamma - 1) / gamma^2:
+//       dsigma/deps = P/T [ (1 - g) + 1/eps^2 - g/eps + 1/(1-eps)^2 - g/(1-eps) ]
+//       The 1/(1-eps)^2 terms are exchange: the electrons are identical, so
+//       "the incident one kept T'" also counts. That is why eps <= 1/2 only.
+//       z = eps^2 [ ... ] = 1 - g eps + eps^2 (1 - g + (1 - g (1-eps)) / (1-eps)^2)
+//   Bhabha (e+ e-):
+//       dsigma/deps = P beta^2/T [ 1/(beta^2 eps^2) - b1/eps + b2 - b3 eps + b4 eps^2 ]
+//       (annihilation diagram included), z = 1 - beta^2 eps (b1 - eps (b2 - eps (b3 - eps b4)))
+double Ionization::computeDeltaRayShape(const Particle& particle, double kineticEnergy, double deltaEnergy) const {
+    const int pdg = particle.getPdgId();
+    if (pdg == 11 || pdg == -11) {
+        const double gamma = 1.0 + kineticEnergy / m_e;
+        const double eps = deltaEnergy / kineticEnergy;
+        if (pdg == 11) {
+            const double g = (2.0 * gamma - 1.0) / (gamma * gamma);
+            const double y = 1.0 - eps;
+            return 1.0 - g * eps + eps * eps * (1.0 - g + (1.0 - g * y) / (y * y));
+        }
+        const double beta2 = 1.0 - 1.0 / (gamma * gamma);
+        const BhabhaCoefficients b(gamma);
+        return 1.0 - beta2 * eps * (b.b1 - eps * (b.b2 - eps * (b.b3 - eps * b.b4)));
+    }
+    const double mass = particle.getMass();
+    const double totalEnergy = kineticEnergy + mass;
+    const double beta2 = kineticEnergy * (kineticEnergy + 2.0 * mass) / (totalEnergy * totalEnergy);
+    double z = 1.0 - beta2 * deltaEnergy / computeMaxSecondaryEnergy(particle, kineticEnergy);
+    if (particle.getSpin() == 0.5) {
+        const double r = deltaEnergy / totalEnergy;
+        z += 0.5 * r * r;
+    }
+    return z;
+}
+
+double Ionization::computeDeltaRayDifferentialCrossSection(const Particle& particle, double kineticEnergy, double deltaEnergy,
+                                                           const Material& material) const {
+    if (deltaEnergy <= 0.0 || deltaEnergy > getMaxDeltaRayEnergy(particle, kineticEnergy)) {
+        return 0.0;
+    }
+    return computeDeltaRayPrefactor(particle, kineticEnergy, material) * computeDeltaRayShape(particle, kineticEnergy, deltaEnergy)
+           / (deltaEnergy * deltaEnergy);
+}
+
+// ------------------------------------------------------------------------------
+// sigma(T_cut) = P integral z / T'^2 dT'     (x1 = T_cut/T, x2 = Tmax/T)
+// ------------------------------------------------------------------------------
+//   heavy:  P [ 1/T_cut - 1/Tmax - beta^2 ln(Tmax/T_cut) / Tmax  (+ (Tmax - T_cut) / (2 E^2)) ]
+//   Moller: P/T [ (x2 - x1) (1 - g + 1/(x1 x2) + 1/((1-x1)(1-x2))) - g ln(x2 (1-x1) / (x1 (1-x2))) ]
+//   Bhabha: P beta^2/T [ (x2 - x1) (1/(beta^2 x1 x2) + b2 - b3 (x1+x2)/2 + b4 (x1^2 + x1 x2 + x2^2)/3)
+//                        - b1 ln(x2/x1) ]
+// (G4BetheBlochModel / G4MollerBhabhaModel::ComputeCrossSectionPerElectron)
+double Ionization::computeDeltaRayCrossSection(const Particle& particle, double kineticEnergy, const Material& material,
+                                               double cut) const {
+    const double tmax = getMaxDeltaRayEnergy(particle, kineticEnergy);
+    if (cut >= tmax) {
+        return 0.0;
+    }
+    const double p = computeDeltaRayPrefactor(particle, kineticEnergy, material);
+    const int pdg = particle.getPdgId();
+    if (pdg == 11 || pdg == -11) {
+        const double gamma = 1.0 + kineticEnergy / m_e;
+        const double x1 = cut / kineticEnergy;
+        const double x2 = tmax / kineticEnergy;
+        if (pdg == 11) {
+            const double g = (2.0 * gamma - 1.0) / (gamma * gamma);
+            return p / kineticEnergy * ((x2 - x1) * (1.0 - g + 1.0 / (x1 * x2) + 1.0 / ((1.0 - x1) * (1.0 - x2)))
+                                        - g * std::log(x2 * (1.0 - x1) / (x1 * (1.0 - x2))));
+        }
+        const double beta2 = 1.0 - 1.0 / (gamma * gamma);
+        const BhabhaCoefficients b(gamma);
+        return p * beta2 / kineticEnergy
+               * ((x2 - x1) * (1.0 / (beta2 * x1 * x2) + b.b2 - 0.5 * b.b3 * (x1 + x2) + b.b4 * (x1 * x1 + x1 * x2 + x2 * x2) / 3.0)
+                  - b.b1 * std::log(x2 / x1));
+    }
+    const double totalEnergy = kineticEnergy + particle.getMass();
+    const double beta2 = kineticEnergy * (kineticEnergy + 2.0 * particle.getMass()) / (totalEnergy * totalEnergy);
+    double s = (tmax - cut) / (cut * tmax) - beta2 * std::log(tmax / cut) / computeMaxSecondaryEnergy(particle, kineticEnergy);
+    if (particle.getSpin() == 0.5) {
+        s += 0.5 * (tmax - cut) / (totalEnergy * totalEnergy);
+    }
+    return p * s;
+}
+
+// ------------------------------------------------------------------------------
+// dE/dx_hard = P integral z / T' dT'
+// ------------------------------------------------------------------------------
+//   heavy:  P [ ln(Tmax/T_cut) - beta^2 (Tmax - T_cut) / Tmax  (+ (Tmax^2 - T_cut^2) / (4 E^2)) ]
+//   Moller: P [ F(x2) - F(x1) ],  F(x) = (1 - g) x^2/2 + ln x + 1/(1-x) + (1 + g) ln(1-x)
+//   Bhabha: P [ ln(x2/x1) - beta^2 ( b1 (x2-x1) - b2 (x2^2-x1^2)/2 + b3 (x2^3-x1^3)/3 - b4 (x2^4-x1^4)/4 ) ]
+// For the heavy particles, unrestricted Bethe-Bloch minus this is exactly the
+// restricted Bethe-Bloch of PDG eq. 34.7 (G4BetheBlochModel::ComputeDEDXPerVolume).
+// For e- it gives the restricted Berger-Seltzer formula (G4MollerBhabhaModel), the
+// validation checks both.
+double Ionization::computeDeltaRayEnergyLoss(const Particle& particle, double kineticEnergy, const Material& material,
+                                             double cut) const {
+    const double tmax = getMaxDeltaRayEnergy(particle, kineticEnergy);
+    if (cut >= tmax) {
+        return 0.0;
+    }
+    const double p = computeDeltaRayPrefactor(particle, kineticEnergy, material);
+    const int pdg = particle.getPdgId();
+    if (pdg == 11 || pdg == -11) {
+        const double gamma = 1.0 + kineticEnergy / m_e;
+        const double x1 = cut / kineticEnergy;
+        const double x2 = tmax / kineticEnergy;
+        if (pdg == 11) {
+            const double g = (2.0 * gamma - 1.0) / (gamma * gamma);
+            auto f = [g](double x) { return 0.5 * (1.0 - g) * x * x + std::log(x) + 1.0 / (1.0 - x) + (1.0 + g) * std::log(1.0 - x); };
+            return p * (f(x2) - f(x1));
+        }
+        const double beta2 = 1.0 - 1.0 / (gamma * gamma);
+        const BhabhaCoefficients b(gamma);
+        auto power = [x1, x2](int n) { return std::pow(x2, n) - std::pow(x1, n); };
+        return p * (std::log(x2 / x1)
+                    - beta2 * (b.b1 * power(1) - 0.5 * b.b2 * power(2) + b.b3 * power(3) / 3.0 - 0.25 * b.b4 * power(4)));
+    }
+    const double totalEnergy = kineticEnergy + particle.getMass();
+    const double beta2 = kineticEnergy * (kineticEnergy + 2.0 * particle.getMass()) / (totalEnergy * totalEnergy);
+    double s = std::log(tmax / cut) - beta2 * (tmax - cut) / computeMaxSecondaryEnergy(particle, kineticEnergy);
+    if (particle.getSpin() == 0.5) {
+        s += 0.25 * (tmax * tmax - cut * cut) / (totalEnergy * totalEnergy);
+    }
+    return p * s;
+}
+
+// Restricted = unrestricted - what the delta rays take. Written like this (and not
+// as a separate formula) so that the two halves of the process add up EXACTLY to
+// the stopping power that was validated against PDG and ESTAR in stage 2.
+double Ionization::computeRestrictedDEDX(const Particle& particle, double kineticEnergy, const Material& material,
+                                         double cut) const {
+    const double full = computeDEDX(particle, kineticEnergy, material);
+    if (full <= 0.0) {
+        return 0.0;
+    }
+    return std::max(0.0, full - computeDeltaRayEnergyLoss(particle, kineticEnergy, material, cut));
+}
+
+// ------------------------------------------------------------------------------
+// Sampling T'
+// ------------------------------------------------------------------------------
+// The 1/T'^2 part by inversion (1/T' uniform between 1/Tmax and 1/T_cut):
+//     T' = T_cut Tmax / (T_cut (1 - u) + Tmax u)
+// then accept with z(T') / zMax, where zMax is an upper bound of z:
+//   heavy:  1 (+ Tmax^2 / (2 E^2) for spin 1/2)
+//   Moller: the larger of z at the two ends. z has no maximum inside the interval
+//           (checked numerically for gamma = 1.0001 ... 1e5, every cut)
+//   Bhabha: each power of eps taken at the end that makes it largest
+// (as G4BetheBlochModel / G4MollerBhabhaModel::SampleSecondaries do)
+double Ionization::sampleDeltaRayEnergy(const Particle& particle, double kineticEnergy, double cut) const {
+    const double tmax = getMaxDeltaRayEnergy(particle, kineticEnergy);
+    if (cut >= tmax) {
+        return 0.0;
+    }
+    const int pdg = particle.getPdgId();
+    double zMax;
+    if (pdg == 11) {
+        zMax = std::max(computeDeltaRayShape(particle, kineticEnergy, cut), computeDeltaRayShape(particle, kineticEnergy, tmax));
+    } else if (pdg == -11) {
+        const double gamma = 1.0 + kineticEnergy / m_e;
+        const double beta2 = 1.0 - 1.0 / (gamma * gamma);
+        const BhabhaCoefficients b(gamma);
+        const double x1 = cut / kineticEnergy;
+        const double x2 = tmax / kineticEnergy;
+        zMax = 1.0 + beta2 * (b.b4 * x2 * x2 * x2 * x2 - b.b3 * x1 * x1 * x1 + b.b2 * x2 * x2 - b.b1 * x1);
+    } else {
+        zMax = 1.0;
+        if (particle.getSpin() == 0.5) {
+            const double r = tmax / (kineticEnergy + particle.getMass());
+            zMax += 0.5 * r * r;
+        }
+    }
+
+    double deltaEnergy;
+    do {
+        const double u = RandomEngine::uniNumGen();
+        deltaEnergy = cut * tmax / (cut * (1.0 - u) + tmax * u);
+    } while (zMax * RandomEngine::uniNumGen() > computeDeltaRayShape(particle, kineticEnergy, deltaEnergy));
+    return deltaEnergy;
+}
+
+// ------------------------------------------------------------------------------
+// Post-step GPIL: the integral approach
+// ------------------------------------------------------------------------------
+// The particle loses energy DURING the step, so sigma(T) changes along it. Taking
+// sigma at the pre-step energy (what every other discrete process here does) is
+// biased, and the bias has a sign:
+//   cut 1 MeV, mu 200 MeV: sigma FALLS as the muon slows (it is 0 below ~42 MeV,
+//       where Tmax < cut): pre-step sigma -> too many delta rays -> range 0.3 % short
+//   cut 0.1 MeV: sigma RISES as the muon slows (1/beta^2): too few -> range too long
+// (found by test 5 of the validation: -4 and +1.5 standard deviations).
+//
+// Geant4's fix (G4VEnergyLossProcess, "integral approach"), a null-collision method:
+//   1. GPIL: sample the distance with sigmaMax >= sigma(T) for every T the step can
+//      reach: from the pre-step energy down to the energy after the longest
+//      continuous step allowed
+//   2. DoIt: at the end of the step, a real delta ray with probability
+//      sigma(T_post) / sigmaMax, otherwise nothing happens ("fictitious" interaction)
+// This is EXACT for any sigma(T) below sigmaMax: rate of fictitious points times
+// acceptance = sigmaMax * sigma(T)/sigmaMax = sigma(T) at every point of the path.
+// Scan up in energy in steps of 0.2 % from the first energy with sigma > 0 until
+// sigma falls: that is the peak (to 0.2 %, i.e. sigma to ~1e-6 there).
+double Ionization::getSigmaMaxEnergies(const Particle& particle, const Material& material) {
+    const auto key = std::make_pair(&particle, &material);
+    const auto found = sigmaMaxEnergies.find(key);
+    if (found != sigmaMaxEnergies.end()) {
+        return found->second;
+    }
+    const double factor = 1.002;
+    double energy = tableEnergyMin;
+    double previous = computeDeltaRayCrossSection(particle, energy, material, deltaRayCut);
+    double peak = GeoDefs::kInfinity;
+    while (energy < tableEnergyMax) {
+        const double next = computeDeltaRayCrossSection(particle, energy * factor, material, deltaRayCut);
+        if (previous > 0.0 && next < previous) {
+            peak = energy;
+            break;
+        }
+        previous = next;
+        energy *= factor;
+    }
+    sigmaMaxEnergies.emplace(key, peak);
+    return peak;
+}
+
+double Ionization::postStepGetPhysicalInteractionLength(const Track& track, const Material& material) {
+    if (deltaElectronDef == nullptr) {
+        return GeoDefs::kInfinity;
+    }
+    const Particle& particle = *track.getParticleDefinition();
+    const double kineticEnergy = track.getKineticEnergy();
+
+    // Lowest energy the continuous loss of this step can reach (on average): after
+    // the longest step the along-step limit allows
+    double lowEnergy = 1e-3 * kineticEnergy;
+    const double range = getRange(particle, kineticEnergy, material);
+    if (range < GeoDefs::kInfinity) {
+        const double longestStep = alongStepGetPhysicalInteractionLength(track, material);
+        if (longestStep < range) {
+            lowEnergy = std::max(lowEnergy, getKineticEnergyFromRange(particle, range - longestStep, material));
+        }
+    } else {
+        lowEnergy = kineticEnergy; // vacuum: no loss, sigma = 0 anyway
+    }
+
+    // The largest sigma in [lowEnergy, T]. sigma(T) is 0 below the threshold
+    // (Tmax = cut), rises to ONE maximum, then changes slowly (falls like 1/beta^2,
+    // rises again a little at high energy). So the largest value in an interval is
+    // at one of its ends, or at the peak if the peak is inside.
+    sigmaMax = std::max(computeDeltaRayCrossSection(particle, kineticEnergy, material, deltaRayCut),
+                        computeDeltaRayCrossSection(particle, lowEnergy, material, deltaRayCut));
+    const double peak = getSigmaMaxEnergies(particle, material);
+    if (peak > lowEnergy && peak < kineticEnergy) {
+        sigmaMax = std::max(sigmaMax, computeDeltaRayCrossSection(particle, peak, material, deltaRayCut));
+    }
+    // getMeanFreePath (header) returns 1 / sigmaMax
+    return DiscreteProcess::postStepGetPhysicalInteractionLength(track, material);
+}
+
+// Kinematics of a collision with a free electron at rest (exact, any projectile):
+//     cos(theta') = T' (E + m_e) / (p' p)          (G4BetheBlochModel::SampleSecondaries)
+// The projectile then has T - T' and momentum p - p' (vectors). With the free-
+// electron kinematics |p - p'| is exactly the momentum of T - T', which the
+// validation checks.
+void Ionization::postStepDoIt(Track& track, const Material& material, Step&, std::vector<Track>& secondaries) {
+    clearNumberOfInteractionLengthLeft();
+    const Particle& particle = *track.getParticleDefinition();
+    const double kineticEnergy = track.getKineticEnergy();
+
+    // Integral approach, step 2: real delta ray with probability sigma(T_post) / sigmaMax.
+    // (Also covers "the along-step loss brought Tmax below the cut": sigma = 0 there.)
+    const double sigma = computeDeltaRayCrossSection(particle, kineticEnergy, material, deltaRayCut);
+    if (sigma > sigmaMax) {
+        ++sigmaMaxViolations;
+    }
+    if (sigma <= 0.0 || sigma < sigmaMax * RandomEngine::uniNumGen()) {
+        return; // fictitious interaction: nothing happens
+    }
+    const double deltaEnergy = sampleDeltaRayEnergy(particle, kineticEnergy, deltaRayCut);
+
+    const double momentum = track.getMomentumMag();
+    const double deltaMomentum = std::sqrt(deltaEnergy * (deltaEnergy + 2.0 * m_e));
+    const double cosTheta = std::min(1.0, deltaEnergy * (track.getTotalEnergy() + m_e) / (deltaMomentum * momentum));
+    const double sinTheta = std::sqrt((1.0 - cosTheta) * (1.0 + cosTheta));
+    const double phi = 2.0 * M_PI * RandomEngine::uniNumGen();
+    Vector3D deltaDirection(sinTheta * std::cos(phi), sinTheta * std::sin(phi), cosTheta);
+    deltaDirection.rotateUz(track.getDirection());
+    secondaries.emplace_back(deltaElectronDef, track.getPosition(), deltaDirection, deltaEnergy);
+
+    // The projectile: momentum conservation. An e+ can give ALL its energy
+    // (eps = 1): it then stops (trackStopButAlive, annihilates at rest) and has no
+    // direction any more.
+    const Vector3D newMomentum = track.getDirection() * momentum - deltaDirection * deltaMomentum;
+    track.deductEnergy(deltaEnergy);
+    if (track.getKineticEnergy() > 0.0) {
+        track.setDirection(newMomentum);
+    }
+
+    if (verboseLevel > 0) {
+        std::cout << "    [" << processName << "] delta ray of " << deltaEnergy / Units::MeV << " MeV (cos theta "
+                  << cosTheta << "), " << particle.getName() << " " << kineticEnergy / Units::MeV << " -> "
+                  << track.getKineticEnergy() / Units::MeV << " MeV\n";
+    }
+}
+

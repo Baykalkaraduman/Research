@@ -23,13 +23,13 @@ protected:
 
     // Forget the sampled value: a new one is drawn at the next GPIL. Called after
     // the interaction happened (G4VProcess::ClearNumberOfInteractionLengthLeft)
-    void clearNumberOfInteractionLengthLeft() { numberOfInteractionLengthLeft = -1.0; }
+    void clearNumberOfInteractionLengthLeft() {numberOfInteractionLengthLeft = -1.0;}
 
 public:
     explicit DiscreteProcess(std::string name) : PhysicsProcess(std::move(name)) {}
 
     // A new track must not inherit the previous track's sampled value
-    void startTracking() override { clearNumberOfInteractionLengthLeft(); }
+    void startTracking(Track&) override {clearNumberOfInteractionLengthLeft();}
 
     // Longer than one line -> DiscreteProcess.cpp
     double postStepGetPhysicalInteractionLength(const Track& track, const Material& material) override;

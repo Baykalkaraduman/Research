@@ -3,6 +3,8 @@
 #include <string>
 #include <iostream>
 
+class DecayTable; // Forward Declaration for the class
+
 // ==============================================================================
 // Base Class: Particle
 // Represents the immutable, static physical properties of a particle type.
@@ -16,6 +18,7 @@ protected:
     double charge;       // Electrical charge in units of elementary charge (e)
     double spin;         // Spin quantum number (e.g., 0.5 for fermions, 1.0 for bosons)
     double lifetime;     // Mean lifetime in nanoseconds (ns). Use -1.0 for stable particles.
+    const DecayTable* decayTable = nullptr;     // How particles are decaying is defined here at "DecayTable" class
 
 public:
     // All-args Constructor
@@ -36,8 +39,13 @@ public:
     double getCharge() const {return charge;}
     double getSpin() const {return spin;}
     double getLifetime() const {return lifetime;}
+    const DecayTable* getDecayTable() const {return decayTable;}
 
-    
+    // ==============================================================================
+    // Setters
+    // ==============================================================================
+    void setDecayTable(const DecayTable* table) {decayTable = table;}
+
     // Utility method to check if the particle decays
     bool isStable() const;
 

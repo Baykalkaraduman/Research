@@ -39,7 +39,7 @@ public:
     virtual bool isApplicable(const Particle&) const {return true;}
 
     // Starts a new track when there is a new particle
-    virtual void startTracking() {}
+    virtual void startTracking(Track& /*track*/) {}
 
     // Setter for verbose level
     void setVerboseLevel(int v_level) {verboseLevel = v_level;}

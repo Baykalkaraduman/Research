@@ -1,7 +1,11 @@
 #pragma once
 
-#include <string>
 #include "Vector3D.h"
+
+#include <string>
+#include <vector>
+
+class Track; // Forward declaration for the class
 
 // ==============================================================================
 // Struct: Step
@@ -18,6 +22,10 @@ struct Step {
     // "Transportation", "UserLimit").
     std::string processDefinedStep;
 
+    // The Energy that is left in the interaction point
     void addTotalEnergyDeposit(double energy) {totalEnergyDeposit += energy;}
+
+    // The step that generates secondaries
+    const std::vector<Track>* secondaryInCurrentStep = nullptr;
 
 };

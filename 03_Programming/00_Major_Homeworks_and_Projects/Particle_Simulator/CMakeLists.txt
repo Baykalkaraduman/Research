@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# [STAGE 2] Optimised build by default: the validation runs ~10^5 tracks
+# Optimised build by default: the validation runs ~10^5 tracks
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
@@ -16,7 +16,7 @@ endif()
 # 3. ROOT INTEGRATION
 # ==============================================================================
 # Find ROOT packages using the environment variables set by thisroot.sh
-# [STAGE 2] + MathCore: the Landau density, CDF and quantile (Ionization.cpp)
+# + MathCore: the Landau density, CDF and quantile (Ionization.cpp)
 find_package(ROOT REQUIRED COMPONENTS Core Hist RIO Tree MathCore)
 
 # Print a message to the terminal to confirm ROOT was found
@@ -26,7 +26,7 @@ message(STATUS "Found ROOT Version: ${ROOT_VERSION}")
 file(GLOB SOURCES "src/*.cpp")
 
 # ==============================================================================
-# 5. [STAGE 2] The simulation code as a library, used by two programs
+# 5. The simulation code as a library, used by two programs
 # ==============================================================================
 # Before: one executable compiled from app/main.cpp + src/*.cpp. Now there are two
 # programs (the demo and the validation); a static library compiles src/ once.
@@ -38,7 +38,7 @@ target_link_libraries(ToySimCore PUBLIC ${ROOT_LIBRARIES})
 add_executable(SimulationApp app/main.cpp)
 target_link_libraries(SimulationApp PRIVATE ToySimCore)
 
-# 7. [STAGE 2] Validation against the PDG muon table for lead
+# 7. Validation against the PDG muon table for lead
 add_executable(ValidationApp app/validateMuonLead.cpp)
 target_link_libraries(ValidationApp PRIVATE ToySimCore)
 # Path of the PDG table, so the program finds it from any working directory
@@ -52,3 +52,15 @@ target_compile_definitions(ToySimCore PUBLIC TOYSIM_DATA_DIR="${CMAKE_SOURCE_DIR
 #    against NIST XCOM, NIST ESTAR and the PDG shower formulas
 add_executable(ValidationEMApp app/validateEM.cpp)
 target_link_libraries(ValidationEMApp PRIVATE ToySimCore)
+
+# 10. Validation of the decays: Michel spectrum, branching ratios,
+#     kinematics, the decay-time law (in flight and at rest) and the energy
+#     balance with neutrinos
+add_executable(ValidationDecayApp app/validateDecay.cpp)
+target_link_libraries(ValidationDecayApp PRIVATE ToySimCore)
+
+# 11. Validation of the delta rays: cross sections vs numerical
+#     integration, sampled spectra, collision kinematics, and that the mean loss
+#     and the mean range do not depend on the production cut
+add_executable(ValidationDeltaApp app/validateDelta.cpp)
+target_link_libraries(ValidationDeltaApp PRIVATE ToySimCore)

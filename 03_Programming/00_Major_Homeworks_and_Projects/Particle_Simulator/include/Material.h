@@ -44,9 +44,9 @@ public:
     double getDensity() const       {return density;}
     double getZ() const             {return Z;}
     double getA() const             {return A;}
-    double getMeanExcEn() const&    {return meanExcitationEnergy;}
-    double getRadLength() const&    {return radLength;}
-    const DensityEffectData getDensEffData() const {return densityEffect;}
+    double getMeanExcEn() const     {return meanExcitationEnergy;}
+    double getRadLength() const     {return radLength;}
+    const DensityEffectData& getDensEffData() const {return densityEffect;}
 
     // (Z / A) [mol/g] to use in Bethe-Bloch formula
     double getZoverA() const {return Z/A;}

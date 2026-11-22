@@ -27,7 +27,9 @@ private:
     double kineticEnergy;       // Kinetic energy (GeV)
     double globalTime;          // Time since the start of the event (ns)
     double trackLength = 0.0;   // Distance travelled so far by the particle (cm)
-    
+    double properTime = 0.0;    // The time on the particles clock
+    double preAssignedDecayProperTime = -1.0;   // The time that the particle will decay
+
     // Status flag
     TrackStatus trackStatus;          // Shows whether particle is alive or not
 
@@ -45,6 +47,8 @@ public:
     TrackStatus getTrackStatus() const {return trackStatus;}
     double getGlobalTime() const {return globalTime;}
     double getTrackLength() const {return trackLength;}
+    double getProperTime() const {return properTime;}
+    double getPreAsgnDecayPrpT() const {return preAssignedDecayProperTime;}
     
     // Tells whether the particle is alive or not
     bool isAlive() const {return trackStatus == TrackStatus::trackAlive;}
@@ -83,6 +87,8 @@ public:
     void deductEnergy(double energyLoss);
     void updatePosition(const Vector3D& newPos) {position = newPos;}
     void setKineticEnergy(double energy) {kineticEnergy = energy;}
+    void addProperTime(double p_time) {properTime += p_time;}
+    void setPreAsgnDecayPrpT(double t) {preAssignedDecayProperTime = t;}
 
     // ==========================================================================
     // Utility

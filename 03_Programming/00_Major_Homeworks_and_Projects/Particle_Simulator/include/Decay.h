@@ -1,33 +1,39 @@
 #pragma once
 
-#include "DiscreteProcess.h"
+#include "PhysicsProcess.h"
 #include "PhysicalConstants.h"
 
 // ==============================================================================
 // Derived Class: Decay
-// Simulates the spontaneous decay of unstable particles in flight.
-// Equivalent to G4Decay (in-flight part).
+// Simulates the spontaneous decay of unstable particles, in flight and at rest.
 // ==============================================================================
-// Derives from DiscreteProcess instead of PhysicsProcess:
-// a decay happens at a point, so it is a post-step process.
-class Decay : public DiscreteProcess {
+class Decay : public PhysicsProcess {
 private:
-    const Particle* decayProductDef; // The particle type this decays into (e.g., Electron)
+    // Choose a channel, build the daughters, boost them, kill the parent.
+    // Shared by the in-flight and the at-rest DoIt. -> Decay.cpp
+    void decayIt(Track& track, std::vector<Track>& secondaries);
 
-protected:
-    // Decay length in the lab:  lambda = beta * gamma * c * tau = (p / m) * c * tau
-    // (beta*gamma = p/m; time dilation is inside gamma). Does not depend on the material.
-    double getMeanFreePath(const Track& track, const Material&) const override {
-        return track.getMomentumMag() / track.getMass() * PhysicalConstants::c * track.getParticleDefinition()->getLifetime();
-    }
+    // Proper time still left before the decay (>= 0). -> Decay.cpp
+    static double getRemainingProperTime(const Track& track);
 
 public:
-    // One-line constructor
-    explicit Decay(const Particle* productDef) : DiscreteProcess("Decay"), decayProductDef(productDef) {}
+    Decay() : PhysicsProcess("Decay") {}
 
-    // Tests whether the particle can decay or not
-    bool isApplicable(const Particle& particle) const override {return !particle.isStable();}
+    // Only particles that are unstable AND have decay channels
+    bool isApplicable(const Particle& particle) const override { return !particle.isStable() && particle.getDecayTable() != nullptr; }
 
-    // The decay itself: produce the secondary and kill the parent
-    void postStepDoIt(Track& track, const Material& material, Step& step, std::vector<Track>& secondaries) override;
+    // Draw the decay time tau * (-ln u), unless one was given already. -> Decay.cpp
+    void startTracking(Track& track) override;
+
+    // Decay length in the lab: lambda = beta gamma c tau (G4Decay::GetMeanFreePath).
+    // No longer used for the stepping, kept for printing and the validation.
+    static double getMeanFreePath(const Track& track) { return track.getBetaGamma() * PhysicalConstants::c * track.getParticleDefinition()->getLifetime(); }
+
+    // In flight: distance to the decay point = remaining proper time * beta gamma c
+    double postStepGetPhysicalInteractionLength(const Track& track, const Material&) override {return getRemainingProperTime(track) * PhysicalConstants::c * track.getBetaGamma();}
+    void postStepDoIt(Track& track, const Material&, Step&, std::vector<Track>& secondaries) override {decayIt(track, secondaries);}
+
+    // At rest: time until the decay = remaining proper time
+    double atRestGetPhysicalInteractionLength(const Track& track) override {return getRemainingProperTime(track);}
+    void atRestDoIt(Track& track, const Material&, Step&, std::vector<Track>& secondaries) override {decayIt(track, secondaries);}
 };

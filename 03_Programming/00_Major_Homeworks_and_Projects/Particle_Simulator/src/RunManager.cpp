@@ -110,7 +110,7 @@ void RunManager::trackParticle(Track& track, std::vector<Track>& trackStack, dou
 
     // Every discrete process forgets what it sampled for the previous track
     for (const auto& process : physicsList) {
-        process->startTracking();
+        process->startTracking(track);
     }
 
     int stepCounter = 0;
@@ -134,8 +134,7 @@ void RunManager::trackParticle(Track& track, std::vector<Track>& trackStack, dou
             step = processOneStep(track, stepSecondaries, maxStepLength);
         }
 
-        // Stopped, but nothing acts at rest on this particle (e-, mu-, ...):
-        // it simply stays where it is.
+        // mu, pi and tau have an at-rest process (Decay), so only stable particles (e-, p, ...) end here.
         if (track.getTrackStatus() == TrackStatus::trackStopButAlive && !hasAtRestProcess(*track.getParticleDefinition())) {
             track.killTrack();
         }
@@ -145,10 +144,12 @@ void RunManager::trackParticle(Track& track, std::vector<Track>& trackStack, dou
                       << step.processDefinedStep << "\n";
         }
 
-        // User hook
+        // User hook, The step's secondaries are visible to it
+        step.secondaryInCurrentStep = &stepSecondaries;
         if (userSteppingAction) {
             userSteppingAction(track, step);
         }
+        step.secondaryInCurrentStep = nullptr; // stepSecondaries dies at the end of this loop pass
 
         // =========================================================
         // ANALYSIS
@@ -231,8 +232,13 @@ Step RunManager::processOneStep(Track& track, std::vector<Track>& secondaries, d
     // Geometry: never cross a boundary inside a step
     double geometryStep = computeGeometryStep(track.getPosition(), track.getDirection());
     if (geometryStep <= stepLength) {
-        // Stop ON the boundary, then kCarTolerance across it (see GeoDefs.h)
-        stepLength = geometryStep + GeoDefs::kCarTolerance;
+        const Volume* preStepVolume = getVolumeAt(track.getPosition());
+        double push = GeoDefs::kCarTolerance;
+        while (push < 1.0 * Units::mm
+               && getVolumeAt(track.getPosition() + track.getDirection() * (geometryStep + push)) == preStepVolume) {
+            push *= 2.0;
+        }
+        stepLength = geometryStep + push;
         postStepProcess = nullptr;
         step.processDefinedStep = "Transportation";
     }
@@ -246,6 +252,11 @@ Step RunManager::processOneStep(Track& track, std::vector<Track>& secondaries, d
     track.updatePosition(track.getPosition() + track.getDirection() * stepLength);
     track.addTime(dt);
     track.addTrackLength(stepLength);
+
+    if (track.getMass() > 0.0) {
+        track.addProperTime(stepLength / (track.getBetaGamma() * PhysicalConstants::c));
+    }
+
 
     // =========================================================
     // 3. ALONG-STEP DoIt: continuous processes (energy loss, ...)
@@ -317,6 +328,7 @@ Step RunManager::processAtRest(Track& track, std::vector<Track>& secondaries) {
 
     if (atRestProcess != nullptr) {
         track.addTime(shortestTime);
+        track.addProperTime(shortestTime);
         atRestProcess->atRestDoIt(track, material, step, secondaries);
         step.processDefinedStep = atRestProcess->getProcessName();
     }

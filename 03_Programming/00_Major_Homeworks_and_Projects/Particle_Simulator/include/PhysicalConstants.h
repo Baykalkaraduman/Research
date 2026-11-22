@@ -39,4 +39,11 @@ namespace PhysicalConstants {
 
     // Highland formula constant (PDG eq. 34.15)
     constexpr double highlandConstant = 13.6 * Units::MeV;
+
+    // Pions (PDG 2024), for the hadronic tau decays and pi -> mu nu
+    constexpr double m_pi = 139.57039 * Units::MeV;     // pi+-
+    constexpr double tau_pi = 26.033 * Units::ns;
+    constexpr double m_pi0 = 134.9768 * Units::MeV;     // pi0
+    constexpr double tau_pi0 = 8.43e-17 * Units::s;     // c tau = 25 nm
+
 }

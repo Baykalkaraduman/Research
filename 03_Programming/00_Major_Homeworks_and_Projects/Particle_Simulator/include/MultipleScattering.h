@@ -30,9 +30,9 @@ private:
 public:
     MultipleScattering() : PhysicsProcess("msc") {}
 
-    bool isApplicable(const Particle& particle) const override { return particle.getCharge() != 0.0; }
+    bool isApplicable(const Particle& particle) const override {return particle.getCharge() != 0.0;}
 
-    void startTracking() override { currentMaterial = nullptr; pathLengthInMaterial = 0.0; }
+    void startTracking(Track&) override {currentMaterial = nullptr; pathLengthInMaterial = 0.0;}
 
     // Does not limit the step (kInfinity, the default of PhysicsProcess). The
     // Highland formula with the path-length bookkeeping above works for any step.
