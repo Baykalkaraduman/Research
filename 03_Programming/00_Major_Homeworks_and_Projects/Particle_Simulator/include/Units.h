@@ -31,6 +31,7 @@ namespace Units {
 
     // Area Units for Cross Section
     constexpr double barn = 1e-24*cm*cm;   // barn
+    constexpr double ubarn = barn*1e-6;    // microbarn, for photonuclear cross sections
     constexpr double mbarn = barn*1e-3;    // millibarn
 
 }

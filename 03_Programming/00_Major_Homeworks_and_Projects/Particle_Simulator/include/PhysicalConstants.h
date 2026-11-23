@@ -46,4 +46,7 @@ namespace PhysicalConstants {
     constexpr double m_pi0 = 134.9768 * Units::MeV;     // pi0
     constexpr double tau_pi0 = 8.43e-17 * Units::s;     // c tau = 25 nm
 
+    // Proton
+    constexpr double m_p = 938.27208816 * Units::MeV;
+
 }
