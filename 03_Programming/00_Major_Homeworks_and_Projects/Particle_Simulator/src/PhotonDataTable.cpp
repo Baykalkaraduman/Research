@@ -2,72 +2,138 @@
 #include "Units.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <map>
 #include <memory>
-#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
-// Folder of the data tables, set by CMake
 #ifndef TOYSIM_DATA_DIR
 #define TOYSIM_DATA_DIR "data"
 #endif
 
+// ==============================================================================
+// Internal Helpers
+// ==============================================================================
+namespace {
+
+// Parses the first 5 numeric columns of an XCOM row without allocating a stream.
+bool parseXcomRow(std::string_view line, double& energyMeV, double& pe, double& pp) noexcept {
+    const char* ptr = line.data();
+    const char* end = ptr + line.size();
+
+    while (ptr < end && (*ptr == ' ' || *ptr == '\t' || *ptr == '\r')) {
+        ++ptr;
+    }
+    if (ptr == end || *ptr == '#') {
+        return false;
+    }
+
+    double cols[5] = {};
+    for (int c = 0; c < 5; ++c) {
+        char* next = nullptr;
+        cols[c] = std::strtod(ptr, &next);
+        if (next == ptr || next > end) {
+            return false;
+        }
+        ptr = next;
+    }
+
+    energyMeV = cols[0];
+    pe = cols[3];
+    pp = cols[4];
+    return true;
+}
+
+} // namespace
+
+// ==============================================================================
+// Construction (NIST XCOM Cross-Section Table)
+// ==============================================================================
 PhotonDataTable::PhotonDataTable(int z) {
-    const std::string path = std::string(TOYSIM_DATA_DIR) + "/xcom_Z" + std::to_string(z) + ".txt";
+    char path[256];
+    std::snprintf(path, sizeof(path), "%s/xcom_Z%d.txt", TOYSIM_DATA_DIR, z);
+
     std::ifstream in(path);
     if (!in) {
-        throw std::runtime_error("Photon Data Table: no cross-section table " + path);
+        throw std::runtime_error(std::string("PhotonDataTable: no cross-section table ") + path);
     }
+
+    energy.reserve(128);
+    photoelectric.reserve(128);
+    pair.reserve(128);
+
     std::string line;
+    double energyMeV = 0.0;
+    double pe = 0.0;
+    double pp = 0.0;
+
     while (std::getline(in, line)) {
-        if (line.empty() || line[0] == '#') continue;
-        std::istringstream columns(line);
-        double energyMeV, coherent, incoherent, pe, pp;
-        if (!(columns >> energyMeV >> coherent >> incoherent >> pe >> pp)) continue;
+        if (!parseXcomRow(line, energyMeV, pe, pp)) {
+            continue;
+        }
         const double e = energyMeV * Units::MeV;
         if (!energy.empty() && e == energy.back()) {
-            shellEnergies.push_back(e); // second row of an absorption edge
+            shellEnergies.push_back(e);
         }
         energy.push_back(e);
         photoelectric.push_back(pe);
         pair.push_back(pp);
     }
+
     if (energy.size() < 2) {
-        throw std::runtime_error("Photon Data Table: table " + path + " is empty");
+        throw std::runtime_error(std::string("PhotonDataTable: table ") + path + " is empty");
     }
 }
 
-// One table per Z for the whole run. The function-local static map is created
-// at the first call; each element's file is read the first time it is asked for.
+// ==============================================================================
+// Element Cache
+// ==============================================================================
 const PhotonDataTable& PhotonDataTable::get(int z) {
-    static std::map<int, std::unique_ptr<PhotonDataTable>> tables;
-    auto found = tables.find(z);
-    if (found == tables.end()) {
-        found = tables.emplace(z, std::unique_ptr<PhotonDataTable>(new PhotonDataTable(z))).first;
+    if (z >= 1 && z <= 100) {
+        static std::array<std::unique_ptr<PhotonDataTable>, 101> fastTables;
+        auto& entry = fastTables[static_cast<std::size_t>(z)];
+        if (!entry) {
+            entry.reset(new PhotonDataTable(z));
+        }
+        return *entry;
     }
-    return *found->second;
+
+    static std::map<int, std::unique_ptr<PhotonDataTable>> extraTables;
+    auto& entry = extraTables[z];
+    if (!entry) {
+        entry.reset(new PhotonDataTable(z));
+    }
+    return *entry;
 }
 
-// Cross sections follow power laws, so straight lines in log(mu) vs log(E) (what
-// XCOM itself uses). upper_bound returns the first row with a HIGHER energy; at
-// an edge both rows are skipped, so an energy exactly on the edge already sees
-// the value above it. Where a value is 0 (pair production up to 1.022 MeV)
-// there is no logarithm: linear interpolation there.
+// ==============================================================================
+// Log-Log Power-Law Interpolation
+// ==============================================================================
 double PhotonDataTable::interpolate(const std::vector<double>& values, double e) const {
     if (e <= energy.front()) {
         return values.front();
     }
-    std::size_t j = std::upper_bound(energy.begin(), energy.end(), e) - energy.begin();
+
+    std::size_t j = static_cast<std::size_t>(std::upper_bound(energy.begin(), energy.end(), e) - energy.begin());
     if (j >= energy.size()) {
-        j = energy.size() - 1; // above the table: extend the last power law
+        j = energy.size() - 1;
     }
     const std::size_t i = j - 1;
-    if (values[i] <= 0.0 || values[j] <= 0.0) {
-        return values[i] + (values[j] - values[i]) * (e - energy[i]) / (energy[j] - energy[i]);
+    const double de = energy[j] - energy[i];
+    if (de <= 0.0) {
+        return values[j];
     }
+
+    if (values[i] <= 0.0 || values[j] <= 0.0) {
+        return values[i] + (values[j] - values[i]) * (e - energy[i]) / de;
+    }
+
     const double slope = std::log(values[j] / values[i]) / std::log(energy[j] / energy[i]);
     return values[i] * std::pow(e / energy[i], slope);
 }

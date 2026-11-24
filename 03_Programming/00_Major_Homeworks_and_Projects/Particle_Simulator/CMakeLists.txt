@@ -23,7 +23,7 @@ find_package(ROOT REQUIRED COMPONENTS Core Hist RIO Tree MathCore)
 message(STATUS "Found ROOT Version: ${ROOT_VERSION}")
 
 # 4. Gather Source Files (This automatically picks up AnalysisManager.cpp)
-file(GLOB SOURCES "src/*.cpp")
+file(GLOB SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 
 # ==============================================================================
 # 5. The simulation code as a library, used by two programs
@@ -44,8 +44,10 @@ target_link_libraries(ValidationApp PRIVATE ToySimCore)
 # Path of the PDG table, so the program finds it from any working directory
 target_compile_definitions(ValidationApp PRIVATE PDG_TABLE_PATH="${CMAKE_SOURCE_DIR}/data/muE_lead_Pb.txt")
 
-# 8. Data tables used by the physics itself (photoelectric cross
-#    sections), found from any working directory (like Geant4's G4LEDATA)
+# 8. Data tables used by the physics itself, found from any working directory
+#    (like Geant4's G4LEDATA): XCOM photon cross sections and, since stage 7b,
+#    the ENDF/B-VIII.0 files for lead (atom-082_Pb_000.endf: atomic relaxation;
+#    photoat-082_Pb_000.endf: subshell photoelectric cross sections)
 target_compile_definitions(ToySimCore PUBLIC TOYSIM_DATA_DIR="${CMAKE_SOURCE_DIR}/data")
 
 # 9. Validation of the photon / electron physics and of the shower
@@ -64,3 +66,10 @@ target_link_libraries(ValidationDecayApp PRIVATE ToySimCore)
 #     and the mean range do not depend on the production cut
 add_executable(ValidationDeltaApp app/validateDelta.cpp)
 target_link_libraries(ValidationDeltaApp PRIVATE ToySimCore)
+
+# 12. [Stage 7b] Validation of the atomic relaxation: shell data vs reference
+#     values, subshell selection vs the XCOM K-edge jump, the cascade sampling,
+#     energy conservation and the K X-ray escape from a lead block vs the
+#     analytic formula
+add_executable(ValidationRelaxApp app/validateRelaxation.cpp)
+target_link_libraries(ValidationRelaxApp PRIVATE ToySimCore)

@@ -1,5 +1,5 @@
 // ==============================================================================
-// [STAGE 2] Validation: muons in lead against the PDG tables
+// [STAGE 2 + 7] Validation: muons in lead against the PDG tables
 // ==============================================================================
 // PDG "Atomic and Nuclear Properties", muon table for lead (data/muE_lead_Pb.txt,
 // https://pdg.lbl.gov/2024/AtomicNuclearProperties/MUE/muE_lead_Pb.txt).
@@ -10,6 +10,8 @@
 //                            (no fluctuations / Gauss / Landau / Landau + msc)
 //   Test 4  Fluctuations:    shape of the loss in a thin layer (peak, width)
 //   Test 5  Msc:             angle behind a lead plate vs Highland, step-size independence
+//   Test 6  Radiative dE/dx: Brems, Pair, Photonucl & Total vs PDG + cut invariance
+//   Test 7  Radiative MC:    full radiative stepping loop vs PDG total CSDA + violations
 //
 // Usage:  ./ValidationApp [seed]
 // ==============================================================================
@@ -17,6 +19,9 @@
 #include "Box.h"
 #include "Ionization.h"
 #include "Material.h"
+#include "MuBremsstrahlung.h"
+#include "MuNuclearInteraction.h"
+#include "MuPairProduction.h"
 #include "MultipleScattering.h"
 #include "Particle.h"
 #include "PhysicalConstants.h"
@@ -42,6 +47,9 @@ namespace {
 struct PdgRow {
     double kineticEnergy;  // MeV
     double ionization;     // MeV cm^2/g
+    double brems;          // MeV cm^2/g
+    double pair;           // MeV cm^2/g
+    double photonuclear;   // MeV cm^2/g
     double totalDEDX;      // MeV cm^2/g (ionization + radiative)
     double csdaRange;      // g/cm^2
 };
@@ -67,7 +75,7 @@ std::vector<PdgRow> readPdgTable(const std::string& path) {
             }
         }
         if (numeric && values.size() == 12) {
-            rows.push_back({values[0], values[2], values[7], values[8]});
+            rows.push_back({values[0], values[2], values[3], values[4], values[5], values[7], values[8]});
         }
     }
     return rows;
@@ -135,6 +143,13 @@ int main(int argc, char** argv) {
     auto lead = makeLead();
     const double rho = lead->getDensity();
     Particle muon(13, "mu-", PhysicalConstants::m_mu, -1.0, 0.5, -1.0); // stable: Decay is not tested here
+    Particle gamma(22, "gamma", 0.0, 0.0, 1.0, -1.0);
+    Particle electron(11, "e-", PhysicalConstants::m_e, -1.0, 0.5, -1.0);
+    Particle positron(-11, "e+", PhysicalConstants::m_e, 1.0, 0.5, -1.0);
+    Particle proton(2212, "proton", PhysicalConstants::m_p, 1.0, 0.5, -1.0);
+    Particle piPlus(211, "pi+", PhysicalConstants::m_pi, 1.0, 0.0, PhysicalConstants::tau_pi);
+    Particle piMinus(-211, "pi-", PhysicalConstants::m_pi, -1.0, 0.0, PhysicalConstants::tau_pi);
+    Particle pi0(111, "pi0", PhysicalConstants::m_pi0, 0.0, 0.0, PhysicalConstants::tau_pi0);
 
     Ionization ionization;
     ionization.setVerboseLevel(0);
@@ -332,6 +347,130 @@ int main(int argc, char** argv) {
     std::printf("ratio ~1 for BOTH step sizes: the path-length bookkeeping makes the result\n");
     std::printf("independent of the steps. (The muon also loses energy in the plate, so for\n");
     std::printf("thick plates at low energy the ratio is slightly above 1.)\n");
+
+    // ==========================================================================
+    // TEST 6: Radiative dE/dx (Brems, Pair, Photonucl) & Total vs PDG
+    // ==========================================================================
+    printHeader("TEST 6  Radiative dE/dx  [MeV cm^2/g]   Brems, Pair, Photonucl & Total vs PDG");
+    MuBremsstrahlung muBrems(&gamma);
+    MuPairProduction muPair(&electron, &positron);
+    MuNuclearInteraction muNucl(&proton, &piPlus, &piMinus, &pi0);
+    muBrems.setVerboseLevel(0);
+    muPair.setVerboseLevel(0);
+    muNucl.setVerboseLevel(0);
+
+    std::printf("%10s | %9s %9s %7s | %9s %9s %7s | %9s %9s %7s | %10s %10s %7s\n",
+                "T [GeV]", "Brems", "PDG", "diff", "Pair", "PDG", "diff", "Nucl", "PDG", "diff", "Total", "PDG", "diff");
+    for (const PdgRow& row : pdg) {
+        if (row.kineticEnergy < 1.0e3 || row.kineticEnergy > 1.0e7) continue;
+        const double mantissa = row.kineticEnergy / std::pow(10.0, std::floor(std::log10(row.kineticEnergy) + 1e-9));
+        const bool show = std::abs(mantissa - 1.0) < 1e-6 || std::abs(mantissa - 2.0) < 1e-6 || std::abs(mantissa - 5.0) < 1e-6;
+        if (!show) continue;
+
+        const double energy = row.kineticEnergy * Units::MeV;
+        const double dIon = ionization.computeDEDX(muon, energy, *lead) / unitDEDX;
+        const double dBrems = muBrems.computeDEDX(muon, energy, *lead) / unitDEDX;
+        const double dPair = muPair.computeDEDX(muon, energy, *lead) / unitDEDX;
+        const double dNucl = muNucl.computeDEDX(muon, energy, *lead) / unitDEDX;
+        const double dTot = dIon + dBrems + dPair + dNucl;
+
+        std::printf("%10.4g | %9.4f %9.4f %+6.2f%% | %9.4f %9.4f %+6.2f%% | %9.4f %9.4f %+6.2f%% | %10.4f %10.4f %+6.2f%%\n",
+                    row.kineticEnergy / 1.0e3,
+                    dBrems, row.brems, 100.0 * (dBrems / row.brems - 1.0),
+                    dPair, row.pair, 100.0 * (dPair / row.pair - 1.0),
+                    dNucl, row.photonuclear, 100.0 * (dNucl / row.photonuclear - 1.0),
+                    dTot, row.totalDEDX, 100.0 * (dTot / row.totalDEDX - 1.0));
+    }
+
+    // Cut-invariance check: restricted dE/dx(cut) + discrete loss above cut == full dE/dx
+    const double testE = 100.0 * Units::GeV;
+    const double nAtoms = lead->getAtomDensity();
+    const double fullBrems = muBrems.computeDEDX(muon, testE, *lead);
+    const double fullPair = muPair.computeDEDX(muon, testE, *lead);
+    const double fullNucl = muNucl.computeDEDX(muon, testE, *lead);
+    double maxCutErr = 0.0;
+    for (double cut : {100.0 * Units::keV, 10.0 * Units::MeV, 1.0 * Units::GeV, 10.0 * Units::GeV}) {
+        const double sumBrems = muBrems.computeRestrictedDEDX(muon, testE, *lead, cut)
+                                + nAtoms * muBrems.computeEnergyLossPerAtom(muon, testE, cut, testE, *lead);
+        const double sumPair = muPair.computeRestrictedDEDX(muon, testE, *lead, cut)
+                               + nAtoms * muPair.computeEnergyLossPerAtom(muon, testE, cut, testE, *lead);
+        const double sumNucl = muNucl.computeRestrictedDEDX(muon, testE, *lead, cut)
+                               + nAtoms * muNucl.computeEnergyLossPerAtom(muon, testE, cut, testE, *lead);
+        maxCutErr = std::max({maxCutErr,
+                              std::abs(sumBrems / fullBrems - 1.0),
+                              std::abs(sumPair / fullPair - 1.0),
+                              std::abs(sumNucl / fullNucl - 1.0)});
+    }
+    std::printf("Cut-invariance max relative error at 100 GeV (restricted + discrete vs total): %.2e\n", maxCutErr);
+
+    // ==========================================================================
+    // TEST 7: Radiative Monte Carlo stepping & violation counters
+    // ==========================================================================
+    printHeader("TEST 7  Monte Carlo: high-energy muons with Ionization + Radiative losses");
+    std::printf("Ionization registered FIRST, followed by MuBremsstrahlung, MuPairProduction, MuNuclearInteraction.\n");
+    std::printf("%10s %8s %12s %14s %9s %11s\n", "T [GeV]", "events", "<L> [g/cm2]", "PDG CSDA", "diff", "rms(L)/<L>");
+
+    const double radEnergies[] = {100.0 * Units::GeV, 1.0e3 * Units::GeV};
+    for (double energy : radEnergies) {
+        RunManager runManager;
+        auto vacuum = std::make_shared<Material>("Vacuum", 0.0);
+        runManager.setWorldVolume(std::make_unique<Box>("World", 260.0 * Units::m, 260.0 * Units::m, 260.0 * Units::m, vacuum));
+        runManager.addVolume(std::make_unique<Box>("LeadBlock", 250.0 * Units::m, 250.0 * Units::m, 250.0 * Units::m, lead));
+
+        // 1. Ionization MUST precede radiative processes (trapezoid rule & integral method)
+        auto ioni = std::make_unique<Ionization>();
+        ioni->setFluctuationModel(FluctuationModel::landau);
+        runManager.addPhysicsProcess(std::move(ioni));
+
+        // 2. Radiative energy-loss processes
+        auto brems = std::make_unique<MuBremsstrahlung>(&gamma);
+        auto pair = std::make_unique<MuPairProduction>(&electron, &positron);
+        auto nucl = std::make_unique<MuNuclearInteraction>(&proton, &piPlus, &piMinus, &pi0);
+        MuBremsstrahlung* bremsPtr = brems.get();
+        MuPairProduction* pairPtr = pair.get();
+        MuNuclearInteraction* nuclPtr = nucl.get();
+        runManager.addPhysicsProcess(std::move(brems));
+        runManager.addPhysicsProcess(std::move(pair));
+        runManager.addPhysicsProcess(std::move(nucl));
+        runManager.setVerboseLevel(0);
+
+        const Vector3D startPosition(0.0, 0.0, -250.0 * Units::m);
+        double endLength = 0.0;
+        runManager.setUserSteppingAction([&](const Track& track, const Step&) {
+            if (!track.isAlive() && track.getParticleDefinition() == &muon) {
+                endLength = track.getTrackLength();
+            }
+        });
+
+        const int nEvents = 500;
+        std::vector<double> lengths;
+        lengths.reserve(nEvents);
+        for (int i = 0; i < nEvents; ++i) {
+            Track primary(&muon, startPosition, Vector3D(0.0, 0.0, 1.0), energy);
+            runManager.simulateEvent(primary, 50.0 * Units::m, 200000);
+            lengths.push_back(endLength * rho);
+        }
+
+        // Look up PDG total CSDA range at this kinetic energy
+        double pdgTotalCSDA = 0.0;
+        const double tMeV = energy / Units::MeV;
+        for (const PdgRow& row : pdg) {
+            if (std::abs(row.kineticEnergy - tMeV) / tMeV < 1e-3) {
+                pdgTotalCSDA = row.csdaRange;
+                break;
+            }
+        }
+
+        std::printf("%10g %8d %12.4g %14.4g %+8.2f%% %10.2f%%\n",
+                    energy / Units::GeV, nEvents, mean(lengths), pdgTotalCSDA,
+                    100.0 * (mean(lengths) / pdgTotalCSDA - 1.0),
+                    100.0 * rms(lengths) / mean(lengths));
+
+        std::printf("  Violations -> Brems (maj=%ld, sig=%ld) | Pair (maj=%ld, sig=%ld) | Nucl (maj=%ld, sig=%ld)\n",
+                    bremsPtr->getMajorantViolations(), bremsPtr->getSigmaMaxViolations(),
+                    pairPtr->getMajorantViolations(), pairPtr->getSigmaMaxViolations(),
+                    nuclPtr->getMajorantViolations(), nuclPtr->getSigmaMaxViolations());
+    }
 
     return 0;
 }

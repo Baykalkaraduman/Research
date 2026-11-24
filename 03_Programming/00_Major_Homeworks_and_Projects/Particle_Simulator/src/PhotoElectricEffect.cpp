@@ -1,4 +1,7 @@
 #include "PhotoElectricEffect.h"
+#include "AtomicDeexcitation.h"
+#include "AtomicTransitionManager.h"
+#include "PhotoElectricShellData.h"
 #include "PhotonDataTable.h"
 #include "PhysicalConstants.h"
 #include "RandomEngine.h"
@@ -10,11 +13,11 @@
 using PhysicalConstants::m_e;
 
 // ==============================================================================
-// mu/rho from the XCOM table
+// Cross Section & Binding Energy Lookups
 // ==============================================================================
 double PhotoElectricEffect::computeMassAttenuation(double energy, const Material& material) const {
     if (material.getZ() < 1.0) {
-        return 0.0; // vacuum
+        return 0.0;
     }
     return PhotonDataTable::get(static_cast<int>(std::lround(material.getZ()))).getPhotoElectric(energy);
 }
@@ -24,20 +27,24 @@ double PhotoElectricEffect::getMeanFreePath(const Track& track, const Material& 
     return mu > 0.0 ? 1.0 / mu : GeoDefs::kInfinity;
 }
 
-// The innermost shell the photon can ionise.
 double PhotoElectricEffect::getBindingEnergy(double energy, const Material& material) const {
-    const PhotonDataTable& table = PhotonDataTable::get(static_cast<int>(std::lround(material.getZ())));
-    double binding = 0.0;
-    for (double shell : table.getShellEnergies()) {
-        if (shell < energy) {
-            binding = shell; // ascending: the last one below the photon energy
+    const int z = static_cast<int>(std::lround(material.getZ()));
+    if (z < 1) {
+        return 0.0;
+    }
+
+    const PhotoElectricShellData& shellData = PhotoElectricShellData::get(z);
+    for (int i = 0; i < shellData.getNumberOfShells(); ++i) {
+        const double binding = shellData.getBindingEnergy(i);
+        if (binding < energy) {
+            return binding;
         }
     }
-    return binding;
+    return 0.0;
 }
 
 // ==============================================================================
-// Sauter-Gavrila angular distribution (K-shell electrons, fully relativistic)
+// Sauter-Gavrila Angular Distribution
 // ==============================================================================
 Vector3D PhotoElectricEffect::samplePhotoElectronDirection(double electronKineticEnergy,
                                                            const Vector3D& photonDirection) const {
@@ -45,6 +52,7 @@ Vector3D PhotoElectricEffect::samplePhotoElectronDirection(double electronKineti
     if (energy > 100.0 * Units::MeV) {
         return photonDirection;
     }
+
     const double tau = energy / m_e;
     const double gamma = 1.0 + tau;
     const double beta = std::sqrt(tau * (tau + 2.0)) / gamma;
@@ -53,7 +61,8 @@ Vector3D PhotoElectricEffect::samplePhotoElectronDirection(double electronKineti
     const double a2 = ac + 2.0;
     const double gtmax = 2.0 * (a1 + 1.0 / ac);
 
-    double tsam, gtr;
+    double tsam = 0.0;
+    double gtr = 0.0;
     do {
         const double rand = RandomEngine::uniNumGen();
         tsam = 2.0 * ac * (2.0 * rand + a2 * std::sqrt(rand)) / (a2 * a2 - 4.0 * rand);
@@ -68,23 +77,46 @@ Vector3D PhotoElectricEffect::samplePhotoElectronDirection(double electronKineti
 }
 
 // ==============================================================================
-// PostStepDoIt: photon absorbed, photoelectron emitted, B deposited
+// Secondary Production & Atomic Relaxation
 // ==============================================================================
 void PhotoElectricEffect::postStepDoIt(Track& track, const Material& material, Step& step,
                                        std::vector<Track>& secondaries) {
     const double photonEnergy = track.getKineticEnergy();
-    const double binding = getBindingEnergy(photonEnergy, material);
-    const double electronEnergy = photonEnergy - binding;
+    const int z = static_cast<int>(std::lround(material.getZ()));
 
-    if (electronEnergy > 0.0) {
-        const Vector3D direction = samplePhotoElectronDirection(electronEnergy, track.getDirection());
-        secondaries.emplace_back(electronDef, track.getPosition(), direction, electronEnergy);
+    double electronEnergy = 0.0;
+    double localDeposit = photonEnergy;
+
+    if (z >= 1) {
+        const PhotoElectricShellData& shellData = PhotoElectricShellData::get(z);
+        const int shell = shellData.sampleShell(photonEnergy);
+
+        if (shell >= 0) {
+            const double binding = shellData.getBindingEnergy(shell);
+            electronEnergy = std::max(0.0, photonEnergy - binding);
+
+            if (electronEnergy > 0.0 && electronDef != nullptr) {
+                const Vector3D direction = samplePhotoElectronDirection(electronEnergy, track.getDirection());
+                secondaries.emplace_back(electronDef, track.getPosition(), direction, electronEnergy);
+            }
+
+            if (deexcitation != nullptr) {
+                const int designator = shellData.getDesignator(shell);
+                const int shellIndex = AtomicTransitionManager::get(z).findShellIndex(designator);
+                localDeposit = (shellIndex >= 0)
+                               ? deexcitation->generateParticles(z, shellIndex, track.getPosition(), secondaries)
+                               : binding;
+            } else {
+                localDeposit = binding;
+            }
+        }
     }
-    step.addTotalEnergyDeposit(binding);
+
+    step.addTotalEnergyDeposit(localDeposit);
 
     if (verboseLevel > 0) {
         std::cout << "    [" << processName << "] photon absorbed: e- with " << electronEnergy / Units::keV
-                  << " keV, binding " << binding / Units::keV << " keV deposited\n";
+                  << " keV, local deposit " << localDeposit / Units::keV << " keV\n";
     }
 
     track.setKineticEnergy(0.0);

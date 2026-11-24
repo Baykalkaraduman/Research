@@ -2,33 +2,46 @@
 
 #include "DiscreteProcess.h"
 
+class AtomicDeexcitation;
 
 // ==============================================================================
 // Derived Class: PhotoElectricEffect
-// The photon is absorbed by an atom; an electron of one shell
-// leaves with T = E_gamma - B (B: binding energy of that shell).
+// Absorbs a photon on a sampled atomic subshell (ENDF/EPDL), emits a Sauter-
+// Gavrila photoelectron with T = E_gamma - B_shell, and triggers atomic
+// relaxation (fluorescence / Auger cascade) when an AtomicDeexcitation is set.
 // ==============================================================================
 class PhotoElectricEffect : public DiscreteProcess {
 private:
-    const Particle* electronDef; // the photoelectron's particle type
+    // --------------------------------------------------------------------------
+    // Member Data & Internal Helpers
+    // --------------------------------------------------------------------------
+    const Particle* electronDef;
+    const AtomicDeexcitation* deexcitation = nullptr;
 
-    // Direction of the photoelectron (Sauter-Gavrila)
-    Vector3D samplePhotoElectronDirection(double electronKineticEnergy, const Vector3D& photonDirection) const;
+    [[nodiscard]] Vector3D samplePhotoElectronDirection(double electronKineticEnergy,
+                                                          const Vector3D& photonDirection) const;
 
 protected:
-    // lambda = 1 / (mu/rho * rho)
-    double getMeanFreePath(const Track& track, const Material& material) const override;
+    // --------------------------------------------------------------------------
+    // DiscreteProcess Hooks
+    // --------------------------------------------------------------------------
+    [[nodiscard]] double getMeanFreePath(const Track& track, const Material& material) const override;
 
 public:
+    // --------------------------------------------------------------------------
+    // Construction & Configuration
+    // --------------------------------------------------------------------------
     explicit PhotoElectricEffect(const Particle* electron) : DiscreteProcess("phot"), electronDef(electron) {}
 
-    bool isApplicable(const Particle& particle) const override { return particle.getPdgId() == 22; }
+    void setAtomicDeexcitation(const AtomicDeexcitation* deex) {deexcitation = deex;}
 
-    // Public for the validation: mu/rho in cm^2/g (log-log interpolation)
-    double computeMassAttenuation(double energy, const Material& material) const;
+    // --------------------------------------------------------------------------
+    // Process & Physics Interface
+    // --------------------------------------------------------------------------
+    [[nodiscard]] bool isApplicable(const Particle& particle) const override {return particle.getPdgId() == 22;}
 
-    // Binding energy of the shell that absorbs a photon of this energy
-    double getBindingEnergy(double energy, const Material& material) const;
+    [[nodiscard]] double computeMassAttenuation(double energy, const Material& material) const;
+    [[nodiscard]] double getBindingEnergy(double energy, const Material& material) const;
 
     void postStepDoIt(Track& track, const Material& material, Step& step, std::vector<Track>& secondaries) override;
 };
