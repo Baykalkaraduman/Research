@@ -35,8 +35,8 @@ private:
     Step applyEnergyCut(Track& track);
 
     bool isBelowEnergyCut(const Track& track) const;
-    bool hasAtRestProcess(const Particle& particle);
-
+    [[nodiscard]] bool hasAtRestProcess(const Particle& particle, const Material& material) const;
+    
     // Distance to the next geometry boundary along the track direction
     double computeGeometryStep(const Vector3D& point, const Vector3D& direction) const;
 

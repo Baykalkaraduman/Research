@@ -13,7 +13,7 @@
 #include <utility>
 
 // ==============================================================================
-// Construction (ENDF/B-VIII.0 Photo-Atomic Subshells, MF=23 MT=534..599)
+// Construction (ENDF/B-VIII.0 Photo-Atomic: MF=23 Cross Sections & MF=27 Factors)
 // ==============================================================================
 PhotoElectricShellData::PhotoElectricShellData(int z) {
     const std::string path = AtomicTransitionManager::getEndfFileName("photoat", z);
@@ -24,33 +24,65 @@ PhotoElectricShellData::PhotoElectricShellData(int z) {
         if (mt < 534 || mt > 599) {
             continue;
         }
-        EndfSection section(path, 23, mt);
-        static_cast<void>(section.readCont());
-        EndfSection::Tab1 tab = section.readTab1();
-        if (tab.x.size() < 2 || tab.nbt.empty()) {
-            continue;
+        double bindingEv = 0.0;
+        Tab1Table cs = readEnergyTable(path, 23, mt, false, &bindingEv);
+        if (!cs.energy.empty()) {
+            tables.push_back({mt - 533, bindingEv * Units::eV, std::move(cs)});
         }
-
-        ShellTable table;
-        table.designator = mt - 533;
-        table.bindingEnergy = tab.head.c1 * Units::eV;
-        table.energy.reserve(tab.x.size());
-        for (double xVal : tab.x) {
-            table.energy.push_back(xVal * Units::eV);
-        }
-        table.sigma = std::move(tab.y);
-        table.nbt = std::move(tab.nbt);
-        table.interpolation = std::move(tab.interpolation);
-        tables.push_back(std::move(table));
     }
 
     if (tables.empty()) {
         throw std::runtime_error("PhotoElectricShellData: no subshell cross sections in " + path);
     }
+
+    coherent = readEnergyTable(path, 23, 502, true);
+    incoherent = readEnergyTable(path, 23, 504, true);
+    formFactor = readFactorTable(path, 502);
+    scatteringFunction = readFactorTable(path, 504);
+    imaginaryAnomalous = readEnergyTable(path, 27, 505, true);
+    realAnomalous = readEnergyTable(path, 27, 506, true);
+}
+
+PhotoElectricShellData::Tab1Table PhotoElectricShellData::readEnergyTable(const std::string& path, int mf, int mt,
+                                                                          bool required, double* c1Out) {
+    EndfSection section(path, mf, mt);
+    static_cast<void>(section.readCont());
+    EndfSection::Tab1 tab = section.readTab1();
+    if (tab.x.size() < 2 || tab.x.size() != tab.y.size() || tab.nbt.empty()) {
+        if (!required) {
+            return {};
+        }
+        throw std::runtime_error("PhotoElectricShellData: invalid MF=" + std::to_string(mf) +
+                                 " MT=" + std::to_string(mt) + " table in " + path);
+    }
+
+    if (c1Out != nullptr) {
+        *c1Out = tab.head.c1;
+    }
+
+    Tab1Table table;
+    table.energy.reserve(tab.x.size());
+    for (double xVal : tab.x) {
+        table.energy.push_back(xVal * Units::eV);
+    }
+    table.value = std::move(tab.y);
+    table.nbt = std::move(tab.nbt);
+    table.interpolation = std::move(tab.interpolation);
+    return table;
+}
+
+PhotoElectricShellData::FactorTable PhotoElectricShellData::readFactorTable(const std::string& path, int mt) {
+    EndfSection section(path, 27, mt);
+    static_cast<void>(section.readCont());
+    EndfSection::Tab1 tab = section.readTab1();
+    if (tab.x.size() < 2 || tab.x.size() != tab.y.size()) {
+        throw std::runtime_error("PhotoElectricShellData: invalid MF=27 MT=" + std::to_string(mt) + " table in " + path);
+    }
+    return {std::move(tab.x), std::move(tab.y)};
 }
 
 // ==============================================================================
-// Subshell Cross Sections & Sampling
+// Interpolation & Table Evaluation
 // ==============================================================================
 // ENDF interpolation laws: 1 histogram, 2 lin-lin, 3 lin-log, 4 log-lin, 5 log-log
 double PhotoElectricShellData::interpolate(long code, double x1, double y1, double x2, double y2, double x) {
@@ -59,35 +91,35 @@ double PhotoElectricShellData::interpolate(long code, double x1, double y1, doub
         return y2;
     }
 
+    const double lin = y1 + (y2 - y1) * (x - x1) / dx;
     switch (code) {
         case 1:
             return y1;
         case 3:
-            return (x1 > 0.0 && x2 > 0.0) ? y1 + (y2 - y1) * std::log(x / x1) / std::log(x2 / x1) : y1;
+            return (x1 > 0.0 && x2 > 0.0) ? y1 + (y2 - y1) * std::log(x / x1) / std::log(x2 / x1) : lin;
         case 4:
-            return (y1 > 0.0 && y2 > 0.0) ? y1 * std::pow(y2 / y1, (x - x1) / dx) : y1;
+            return (y1 > 0.0 && y2 > 0.0) ? y1 * std::pow(y2 / y1, (x - x1) / dx) : lin;
         case 5:
             return (x1 > 0.0 && x2 > 0.0 && y1 > 0.0 && y2 > 0.0)
                    ? y1 * std::pow(y2 / y1, std::log(x / x1) / std::log(x2 / x1))
-                   : y1;
+                   : lin;
         default:
-            return y1 + (y2 - y1) * (x - x1) / dx;
+            return lin;
     }
 }
 
-double PhotoElectricShellData::computeCrossSection(int shell, double e) const {
-    const ShellTable& table = tables[shell];
-    if (e <= table.bindingEnergy) {
+double PhotoElectricShellData::evaluateTab1(const Tab1Table& table, double e, bool clampNonNegative) {
+    if (table.energy.size() < 2 || (clampNonNegative && e <= 0.0)) {
         return 0.0;
     }
 
     const std::vector<double>& x = table.energy;
-    const std::vector<double>& y = table.sigma;
+    const std::vector<double>& y = table.value;
     if (e <= x.front()) {
-        return y.front();
+        return clampNonNegative ? std::max(0.0, y.front()) : y.front();
     }
     if (e >= x.back()) {
-        return y.back();
+        return clampNonNegative ? std::max(0.0, y.back()) : y.back();
     }
 
     const auto upper = std::upper_bound(x.begin(), x.end(), e);
@@ -104,9 +136,50 @@ double PhotoElectricShellData::computeCrossSection(int shell, double e) const {
         }
     }
 
-    return std::max(0.0, interpolate(code, x[i], y[i], x[i + 1], y[i + 1], e));
+    const double val = interpolate(code, x[i], y[i], x[i + 1], y[i + 1], e);
+    return clampNonNegative ? std::max(0.0, val) : val;
 }
 
+double PhotoElectricShellData::evaluateSubshell(const ShellTable& shell, double e) {
+    if (e <= shell.bindingEnergy) {
+        return 0.0;
+    }
+    return evaluateTab1(shell.crossSection, e, true);
+}
+
+double PhotoElectricShellData::interpolateLogLog(const FactorTable& table, double x) {
+    if (table.x.empty()) {
+        return 0.0;
+    }
+    if (x <= table.x.front()) {
+        return table.y.front();
+    }
+    if (x >= table.x.back()) {
+        return table.y.back();
+    }
+
+    const auto upper = std::upper_bound(table.x.begin(), table.x.end(), x);
+    const std::size_t i = static_cast<std::size_t>(upper - table.x.begin()) - 1;
+    const double x1 = table.x[i];
+    const double x2 = table.x[i + 1];
+    const double y1 = table.y[i];
+    const double y2 = table.y[i + 1];
+    const double dx = x2 - x1;
+    if (dx <= 0.0) {
+        return y2;
+    }
+
+    if (x1 <= 0.0 || x2 <= 0.0 || y1 <= 0.0 || y2 <= 0.0) {
+        return y1 + (y2 - y1) * (x - x1) / dx;
+    }
+
+    const double slope = std::log(y2 / y1) / std::log(x2 / x1);
+    return y1 * std::pow(x / x1, slope);
+}
+
+// ==============================================================================
+// Subshell Fractions & Sampling
+// ==============================================================================
 double PhotoElectricShellData::computeShellFraction(int shell, double e) const {
     const int n = getNumberOfShells();
     if (shell < 0 || shell >= n) {
@@ -116,7 +189,7 @@ double PhotoElectricShellData::computeShellFraction(int shell, double e) const {
     double target = 0.0;
     double total = 0.0;
     for (int i = 0; i < n; ++i) {
-        const double s = computeCrossSection(i, e);
+        const double s = evaluateSubshell(tables[static_cast<std::size_t>(i)], e);
         if (i == shell) {
             target = s;
         }
@@ -131,8 +204,9 @@ int PhotoElectricShellData::sampleShell(double e) const {
     double total = 0.0;
 
     for (int i = 0; i < n; ++i) {
-        sigma[static_cast<std::size_t>(i)] = computeCrossSection(i, e);
-        total += sigma[static_cast<std::size_t>(i)];
+        const double s = evaluateSubshell(tables[static_cast<std::size_t>(i)], e);
+        sigma[static_cast<std::size_t>(i)] = s;
+        total += s;
     }
     if (total <= 0.0) {
         return -1;

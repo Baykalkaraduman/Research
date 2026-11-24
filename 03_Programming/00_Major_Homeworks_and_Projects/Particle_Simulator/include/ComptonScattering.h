@@ -4,35 +4,42 @@
 
 // ==============================================================================
 // Derived Class: ComptonScattering
-// A photon scatters on an atomic electron, treated as FREE and at rest: Klein-Nishina.
-//
-// Kinematics (eps = E'/E, k = E/m_e):  1 - cos(theta) = (1 - eps) / (eps k)
-// so eps runs from 1/(1 + 2k) (back-scatter) to 1 (forward, nothing happens).
-// The electron gets T = E - E'.
-//
-// Cross section per atom = Z * (Klein-Nishina per electron), exact formula.
+// Incoherent photon scattering on atomic electrons.
+// Cross section: ENDF/B-VIII.0 MF=23 MT=504 (via PhotoElectricShellData).
+// Kinematics: Klein-Nishina rejection modulated by S(x)/Z (MF=27 MT=504),
+// with recoil electron kinetic energy T = E - E'.
+// Free-electron static methods are kept for validateEM (Klein-Nishina checks).
 // ==============================================================================
 class ComptonScattering : public DiscreteProcess {
 private:
-    const Particle* electronDef; // particle type of the recoil electron
+    // --------------------------------------------------------------------------
+    // Member Data
+    // --------------------------------------------------------------------------
+    const Particle* electronDef;
 
 protected:
-    // lambda = 1 / (n_atoms Z sigma_KN)
-    double getMeanFreePath(const Track& track, const Material& material) const override;
+    // --------------------------------------------------------------------------
+    // DiscreteProcess Hooks
+    // --------------------------------------------------------------------------
+    [[nodiscard]] double getMeanFreePath(const Track& track, const Material& material) const override;
 
 public:
+    // --------------------------------------------------------------------------
+    // Construction & Process Interface
+    // --------------------------------------------------------------------------
     explicit ComptonScattering(const Particle* electron) : DiscreteProcess("compt"), electronDef(electron) {}
 
-    bool isApplicable(const Particle& particle) const override { return particle.getPdgId() == 22; }
+    [[nodiscard]] bool isApplicable(const Particle& particle) const override {return particle.getPdgId() == 22;}
 
-    // Klein-Nishina total cross section per electron (cm^2)
-    static double computeCrossSectionPerElectron(double energy);
+    // --------------------------------------------------------------------------
+    // Cross Sections & Energy-Fraction Sampling (public for validation)
+    // --------------------------------------------------------------------------
+    [[nodiscard]] static double computeCrossSectionPerElectron(double energy);
+    [[nodiscard]] static double computeDifferentialCrossSection(double energy, double eps);
+    [[nodiscard]] double computeCrossSectionPerAtom(double energy, const Material& material) const;
 
-    // dsigma/deps per electron, the distribution sampleEnergyFraction draws from
-    static double computeDifferentialCrossSection(double energy, double eps);
-
-    // eps = E'/E drawn from Klein-Nishina (G4KleinNishinaCompton::SampleSecondaries)
-    static double sampleEnergyFraction(double energy);
+    [[nodiscard]] static double sampleEnergyFraction(double energy);
+    [[nodiscard]] static double sampleEnergyFraction(double energy, int z);
 
     void postStepDoIt(Track& track, const Material& material, Step& step, std::vector<Track>& secondaries) override;
 };

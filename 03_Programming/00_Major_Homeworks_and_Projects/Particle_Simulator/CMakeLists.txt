@@ -1,75 +1,98 @@
-# 1. Define minimum CMake version and Project Name
+# ==============================================================================
+# ToyMonteCarlo — CMake Build Configuration
+# ==============================================================================
 cmake_minimum_required(VERSION 3.10)
 project(ToyMonteCarlo CXX)
 
-# 2. Modern C++ Standard (Required for smart pointers and ROOT 6+)
+# 1. C++ Standard & Build Type
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Optimised build by default: the validation runs ~10^5 tracks
+# Optimised build by default: validation suites run ~10^5-10^6 tracks
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
 # ==============================================================================
-# 3. ROOT INTEGRATION
+# 2. ROOT Integration
 # ==============================================================================
-# Find ROOT packages using the environment variables set by thisroot.sh
-# + MathCore: the Landau density, CDF and quantile (Ionization.cpp)
+# Requires environment variables set by thisroot.sh.
+# MathCore provides Landau density, CDF, and quantile functions (Ionization.cpp).
 find_package(ROOT REQUIRED COMPONENTS Core Hist RIO Tree MathCore)
-
-# Print a message to the terminal to confirm ROOT was found
 message(STATUS "Found ROOT Version: ${ROOT_VERSION}")
 
-# 4. Gather Source Files (This automatically picks up AnalysisManager.cpp)
+# ==============================================================================
+# 3. Core Simulation Library (ToySimCore)
+# ==============================================================================
+# Compiled once from src/*.cpp and shared by the main demo and all validation apps.
 file(GLOB SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 
-# ==============================================================================
-# 5. The simulation code as a library, used by two programs
-# ==============================================================================
-# Before: one executable compiled from app/main.cpp + src/*.cpp. Now there are two
-# programs (the demo and the validation); a static library compiles src/ once.
 add_library(ToySimCore STATIC ${SOURCES})
 target_include_directories(ToySimCore PUBLIC include ${ROOT_INCLUDE_DIRS})
 target_link_libraries(ToySimCore PUBLIC ${ROOT_LIBRARIES})
 
-# 6. The demo (one verbose event)
+# Physics data directory (accessible from any working directory, like G4LEDATA):
+#   - NIST XCOM photon attenuation tables (xcom_Z*.txt)
+#   - ENDF/B-VIII.0 atomic relaxation data (atom-ZZZ_Sy_000.endf: MF=28)
+#   - ENDF/B-VIII.0 photo-atomic data (photoat-ZZZ_Sy_000.endf: MF=23 subshells,
+#     coherent/incoherent cross sections, and MF=27 F(x), S(x), f'(E), f''(E))
+target_compile_definitions(ToySimCore PUBLIC TOYSIM_DATA_DIR="${CMAKE_SOURCE_DIR}/data")
+
+# ==============================================================================
+# 4. Main Simulation Application
+# ==============================================================================
+# Runs a single verbose event with full geometry, physics list, and ROOT output.
 add_executable(SimulationApp app/main.cpp)
 target_link_libraries(SimulationApp PRIVATE ToySimCore)
 
-# 7. Validation against the PDG muon table for lead
+# ==============================================================================
+# 5. Physics Validation Executables
+# ==============================================================================
+
+# 5a. Muon energy loss and range in lead vs PDG tables
 add_executable(ValidationApp app/validateMuonLead.cpp)
 target_link_libraries(ValidationApp PRIVATE ToySimCore)
-# Path of the PDG table, so the program finds it from any working directory
 target_compile_definitions(ValidationApp PRIVATE PDG_TABLE_PATH="${CMAKE_SOURCE_DIR}/data/muE_lead_Pb.txt")
 
-# 8. Data tables used by the physics itself, found from any working directory
-#    (like Geant4's G4LEDATA): XCOM photon cross sections and, since stage 7b,
-#    the ENDF/B-VIII.0 files for lead (atom-082_Pb_000.endf: atomic relaxation;
-#    photoat-082_Pb_000.endf: subshell photoelectric cross sections)
-target_compile_definitions(ToySimCore PUBLIC TOYSIM_DATA_DIR="${CMAKE_SOURCE_DIR}/data")
-
-# 9. Validation of the photon / electron physics and of the shower
-#    against NIST XCOM, NIST ESTAR and the PDG shower formulas
+# 5b. Electromagnetic physics & shower validation vs NIST XCOM, ESTAR, and PDG formulas
 add_executable(ValidationEMApp app/validateEM.cpp)
 target_link_libraries(ValidationEMApp PRIVATE ToySimCore)
 
-# 10. Validation of the decays: Michel spectrum, branching ratios,
-#     kinematics, the decay-time law (in flight and at rest) and the energy
-#     balance with neutrinos
+# 5c. Particle decays: Michel spectrum, branching ratios, decay-time law
+#     (in flight and at rest), kinematics, and neutrino energy balance
 add_executable(ValidationDecayApp app/validateDecay.cpp)
 target_link_libraries(ValidationDecayApp PRIVATE ToySimCore)
 
-# 11. Validation of the delta rays: cross sections vs numerical
-#     integration, sampled spectra, collision kinematics, and that the mean loss
-#     and the mean range do not depend on the production cut
+# 5d. Delta-ray production: differential cross sections vs numerical integration,
+#     sampled spectra, kinematics, and cut-independence of mean dE/dx and range
 add_executable(ValidationDeltaApp app/validateDelta.cpp)
 target_link_libraries(ValidationDeltaApp PRIVATE ToySimCore)
 
-# 12. [Stage 7b] Validation of the atomic relaxation: shell data vs reference
-#     values, subshell selection vs the XCOM K-edge jump, the cascade sampling,
-#     energy conservation and the K X-ray escape from a lead block vs the
-#     analytic formula
+# 5e. Atomic relaxation in lead: ENDF/B-VIII.0 binding energies and
+#     K-line energies vs reference tables, subshell selection vs XCOM edge jumps,
+#     cascade sampling, event-by-event energy conservation, and K X-ray escape
 add_executable(ValidationRelaxApp app/validateRelaxation.cpp)
 target_link_libraries(ValidationRelaxApp PRIVATE ToySimCore)
+
+# 5f. Coherent (Rayleigh) & bound incoherent (Compton) scattering:
+#     F(x)/S(x) limits and anomalous differential integrals vs ENDF MF=23 MT=502/504,
+#     cross sections vs NIST XCOM, angular and energy-fraction sampling (quantile
+#     chi2 and forward suppression), energy conservation, and thin-slab transmission
+add_executable(ValidationScatteringApp app/validateRayleighScattering.cpp)
+target_link_libraries(ValidationScatteringApp PRIVATE ToySimCore)
+
+# 5g. Stopped negative muon capture & bound decay-in-orbit:
+#     Suzuki et al. capture rates & Huff factors, Pb/C effective lifetimes &
+#     capture fractions, mu+ non-capture, prompt K_alpha/L_alpha X-ray yields,
+#     H 2-body kinematics, Pb neutron multiplicity, and energy/momentum conservation
+add_executable(ValidationMuonCaptureApp app/validateMuonCapture.cpp)
+target_link_libraries(ValidationMuonCaptureApp PRIVATE ToySimCore)
+
+# ==============================================================================
+# 6. CTest Registration
+# ==============================================================================
+enable_testing()
+add_test(NAME Stage7b_Relaxation COMMAND ValidationRelaxApp quick)
+add_test(NAME Stage7c_Scattering COMMAND ValidationScatteringApp quick)
+add_test(NAME Stage8_MuonCapture COMMAND ValidationMuonCaptureApp quick)

@@ -1,6 +1,8 @@
 #include "ComptonScattering.h"
+#include "PhotoElectricShellData.h"
 #include "PhysicalConstants.h"
 #include "RandomEngine.h"
+#include "Units.h"
 
 #include <algorithm>
 #include <cmath>
@@ -9,13 +11,19 @@
 using PhysicalConstants::m_e;
 using PhysicalConstants::r_e;
 
+namespace {
+
+constexpr double kHcEvAngstrom = 12398.419843320026; // h*c [eV * Angstrom]
+
+} // namespace
+
 // ==============================================================================
-// Klein-Nishina total cross section per electron (k = E / m_e)
+// Cross Sections & Mean Free Path
 // ==============================================================================
-// sigma = 2 pi r_e^2 { (1+k)/k^2 [ 2(1+k)/(1+2k) - ln(1+2k)/k ] + ln(1+2k)/(2k) - (1+3k)/(1+2k)^2 }
-// For k -> 0 the terms cancel each other (each is ~1/k^2, the sum is the finite
-// Thomson value 8/3 pi r_e^2): below k = 1e-3 (0.5 keV) the series is used.
 double ComptonScattering::computeCrossSectionPerElectron(double energy) {
+    if (energy <= 0.0) {
+        return 0.0;
+    }
     const double k = energy / m_e;
     const double thomson = 8.0 / 3.0 * M_PI * r_e * r_e;
     if (k < 1.0e-3) {
@@ -27,9 +35,17 @@ double ComptonScattering::computeCrossSectionPerElectron(double energy) {
                                      + l / (2.0 * k) - (1.0 + 3.0 * k) / (a * a));
 }
 
+double ComptonScattering::computeCrossSectionPerAtom(double energy, const Material& material) const {
+    if (energy <= 0.0 || material.getZ() < 1.0) {
+        return 0.0;
+    }
+    const int z = static_cast<int>(std::lround(material.getZ()));
+    const double barn = 1.0e-24 * Units::cm * Units::cm;
+    return PhotoElectricShellData::get(z).getIncoherentCrossSection(energy) * barn;
+}
+
 double ComptonScattering::getMeanFreePath(const Track& track, const Material& material) const {
-    const double mu = material.getAtomDensity() * material.getZ()
-                    * computeCrossSectionPerElectron(track.getKineticEnergy());
+    const double mu = material.getAtomDensity() * computeCrossSectionPerAtom(track.getKineticEnergy(), material);
     return mu > 0.0 ? 1.0 / mu : GeoDefs::kInfinity;
 }
 
@@ -39,20 +55,17 @@ double ComptonScattering::getMeanFreePath(const Track& track, const Material& ma
 double ComptonScattering::computeDifferentialCrossSection(double energy, double eps) {
     const double k = energy / m_e;
     const double epsMin = 1.0 / (1.0 + 2.0 * k);
-    if (eps < epsMin || eps > 1.0) {return 0.0;}
+    if (eps < epsMin || eps > 1.0) {
+        return 0.0;
+    }
     const double oneMinusCos = (1.0 - eps) / (eps * k);
     const double sin2 = oneMinusCos * (2.0 - oneMinusCos);
     return M_PI * r_e * r_e / k * (1.0 / eps + eps) * (1.0 - eps * sin2 / (1.0 + eps * eps));
 }
 
 // ==============================================================================
-// Sampling eps (Butcher & Messel 1960, as G4KleinNishinaCompton)
+// Sampling eps: Free Klein-Nishina & Bound S(x)/Z (Butcher & Messel 1960)
 // ==============================================================================
-// Write dsigma/deps ~ f(eps) g(eps) with
-//   f(eps) = 1/eps + eps          (easy to sample: a sum of two pieces)
-//   g(eps) = 1 - eps sin^2/(1 + eps^2)  in [0, 1]  (the rejection function)
-// The piece 1/eps on [eps0, 1] has weight alpha1 = ln(1/eps0): eps = eps0^r.
-// The piece eps has weight alpha2 = (1 - eps0^2)/2: eps^2 uniform in [eps0^2, 1].
 double ComptonScattering::sampleEnergyFraction(double energy) {
     const double k = energy / m_e;
     const double eps0 = 1.0 / (1.0 + 2.0 * k);
@@ -60,10 +73,12 @@ double ComptonScattering::sampleEnergyFraction(double energy) {
     const double alpha1 = -std::log(eps0);
     const double alpha2 = alpha1 + 0.5 * (1.0 - eps0sq);
 
-    double eps, epsSq, greject;
+    double eps = 1.0;
+    double epsSq = 1.0;
+    double greject = 0.0;
     do {
         if (alpha1 > alpha2 * RandomEngine::uniNumGen()) {
-            eps = std::exp(-alpha1 * RandomEngine::uniNumGen()); // eps0^r
+            eps = std::exp(-alpha1 * RandomEngine::uniNumGen());
             epsSq = eps * eps;
         } else {
             epsSq = eps0sq + (1.0 - eps0sq) * RandomEngine::uniNumGen();
@@ -73,19 +88,61 @@ double ComptonScattering::sampleEnergyFraction(double energy) {
         const double sin2 = oneMinusCos * (2.0 - oneMinusCos);
         greject = 1.0 - eps * sin2 / (1.0 + epsSq);
     } while (greject < RandomEngine::uniNumGen());
+
+    return eps;
+}
+
+double ComptonScattering::sampleEnergyFraction(double energy, int z) {
+    if (z < 1) {
+        return sampleEnergyFraction(energy);
+    }
+
+    const PhotoElectricShellData& shellData = PhotoElectricShellData::get(z);
+    const double invHc = 1.0 / (kHcEvAngstrom * Units::eV);
+    const double invZ = 1.0 / static_cast<double>(z);
+
+    // Prevent an infinite loop if S(x) vanishes across the entire accessible x range
+    if (shellData.getScatteringFunction(energy * invHc) <= 0.0) {
+        return 1.0;
+    }
+
+    const double k = energy / m_e;
+    const double eps0 = 1.0 / (1.0 + 2.0 * k);
+    const double eps0sq = eps0 * eps0;
+    const double alpha1 = -std::log(eps0);
+    const double alpha2 = alpha1 + 0.5 * (1.0 - eps0sq);
+
+    double eps = 1.0;
+    double epsSq = 1.0;
+    double greject = 0.0;
+    do {
+        if (alpha1 > alpha2 * RandomEngine::uniNumGen()) {
+            eps = std::exp(-alpha1 * RandomEngine::uniNumGen());
+            epsSq = eps * eps;
+        } else {
+            epsSq = eps0sq + (1.0 - eps0sq) * RandomEngine::uniNumGen();
+            eps = std::sqrt(epsSq);
+        }
+        const double oneMinusCos = (1.0 - eps) / (eps * k);
+        const double sin2 = oneMinusCos * (2.0 - oneMinusCos);
+        const double x = energy * invHc * std::sqrt(std::max(0.0, 0.5 * oneMinusCos));
+        greject = (1.0 - eps * sin2 / (1.0 + epsSq)) * (shellData.getScatteringFunction(x) * invZ);
+    } while (greject < RandomEngine::uniNumGen());
+
     return eps;
 }
 
 // ==============================================================================
-// PostStepDoIt: new photon energy and direction, recoil electron
+// PostStepDoIt: Scattered Photon & Recoil Electron (T = E - E')
 // ==============================================================================
-void ComptonScattering::postStepDoIt(Track& track, const Material&, Step&, std::vector<Track>& secondaries) {
+void ComptonScattering::postStepDoIt(Track& track, const Material& material, Step&, std::vector<Track>& secondaries) {
     const double energy = track.getKineticEnergy();
     const double k = energy / m_e;
-    const double eps = sampleEnergyFraction(energy);
+    const int z = static_cast<int>(std::lround(material.getZ()));
+    const double eps = sampleEnergyFraction(energy, z);
 
     const double cosTheta = std::clamp(1.0 - (1.0 - eps) / (eps * k), -1.0, 1.0);
-    const double sinTheta = std::sqrt((1.0 - cosTheta) * (1.0 + cosTheta));
+    const double sinTheta = std::sqrt(std::max(0.0, (1.0 - cosTheta) * (1.0 + cosTheta)));
     const double phi = 2.0 * M_PI * RandomEngine::uniNumGen();
 
     const Vector3D oldDirection = track.getDirection();
@@ -95,7 +152,7 @@ void ComptonScattering::postStepDoIt(Track& track, const Material&, Step&, std::
     // Electron: momentum conservation, p_e = p_gamma - p_gamma'  (photon: p = E)
     const double scatteredEnergy = eps * energy;
     const double electronEnergy = energy - scatteredEnergy;
-    if (electronEnergy > 0.0) {
+    if (electronEnergy > 0.0 && electronDef != nullptr) {
         const Vector3D electronDirection = (oldDirection * energy - newDirection * scatteredEnergy).unit();
         secondaries.emplace_back(electronDef, track.getPosition(), electronDirection, electronEnergy);
     }

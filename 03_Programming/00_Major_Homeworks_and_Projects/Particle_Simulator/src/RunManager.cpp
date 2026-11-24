@@ -135,10 +135,12 @@ void RunManager::trackParticle(Track& track, std::vector<Track>& trackStack, dou
         }
 
         // mu, pi and tau have an at-rest process (Decay), so only stable particles (e-, p, ...) end here.
-        if (track.getTrackStatus() == TrackStatus::trackStopButAlive && !hasAtRestProcess(*track.getParticleDefinition())) {
-            track.killTrack();
+        if (track.getTrackStatus() == TrackStatus::trackStopButAlive) {
+            const Volume* vol = getVolumeAt(track.getPosition());
+            if (vol == nullptr || !hasAtRestProcess(*track.getParticleDefinition(), *vol->getMaterial())) {
+                track.killTrack();
+            }
         }
-
         if (verboseLevel > 0) {
             std::cout << "    [Step] Length: " << step.stepLength << " cm | Defined by: "
                       << step.processDefinedStep << "\n";
@@ -317,12 +319,25 @@ Step RunManager::processAtRest(Track& track, std::vector<Track>& secondaries) {
 
     PhysicsProcess* atRestProcess = nullptr;
     double shortestTime = GeoDefs::kInfinity;
+
+    // 1. Exclusive at-rest owner (e.g. MuonCapture for stopped mu- in matter)
     for (const auto& process : physicsList) {
-        if (!process->isApplicable(particle)) continue;
-        const double time = process->atRestGetPhysicalInteractionLength(track);
-        if (time < shortestTime) {
-            shortestTime = time;
+        if (process->isAtRestApplicable(particle, material) && process->isAtRestExclusive(particle, material)) {
             atRestProcess = process.get();
+            shortestTime = process->atRestGetPhysicalInteractionLength(track, material);
+            break;
+        }
+    }
+
+    // 2. Otherwise, standard shortest-time race among applicable at-rest processes
+    if (atRestProcess == nullptr) {
+        for (const auto& process : physicsList) {
+            if (!process->isAtRestApplicable(particle, material)) continue;
+            const double time = process->atRestGetPhysicalInteractionLength(track, material);
+            if (time < shortestTime) {
+                shortestTime = time;
+                atRestProcess = process.get();
+            }
         }
     }
 
@@ -330,22 +345,22 @@ Step RunManager::processAtRest(Track& track, std::vector<Track>& secondaries) {
         track.addTime(shortestTime);
         track.addProperTime(shortestTime);
         atRestProcess->atRestDoIt(track, material, step, secondaries);
-        step.processDefinedStep = atRestProcess->getProcessName();
+        if (step.processDefinedStep == "AtRest") {
+            step.processDefinedStep = atRestProcess->getProcessName();
+        }
     }
-    track.killTrack(); // an at-rest process always ends the track
+    track.killTrack();
     return step;
 }
 
-bool RunManager::hasAtRestProcess(const Particle& particle) {
+bool RunManager::hasAtRestProcess(const Particle& particle, const Material& material) const {
     for (const auto& process : physicsList) {
-        if (!process->isApplicable(particle)) continue;
-        if (process->atRestGetPhysicalInteractionLength(Track(&particle, Vector3D(), Vector3D(0, 0, 1), 0.0)) < GeoDefs::kInfinity) {
+        if (process->isAtRestApplicable(particle, material)) {
             return true;
         }
     }
     return false;
 }
-
 // ==========================================================================
 // Energy cut
 // ==========================================================================
