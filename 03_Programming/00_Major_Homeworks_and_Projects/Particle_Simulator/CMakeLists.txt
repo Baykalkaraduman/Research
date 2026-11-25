@@ -89,6 +89,12 @@ target_link_libraries(ValidationScatteringApp PRIVATE ToySimCore)
 add_executable(ValidationMuonCaptureApp app/validateMuonCapture.cpp)
 target_link_libraries(ValidationMuonCaptureApp PRIVATE ToySimCore)
 
+# 5h. [Stage 9] Landau-Pomeranchuk-Migdal (LPM) & dielectric suppression:
+#     Migdal phi(s)/G(s)/xi(s) identities, SLAC E-146 25 GeV bremsstrahlung,
+#     PeV pair suppression, quantile chi2 sampling, and 100 TeV shower elongation
+add_executable(ValidationLPMApp app/validateLPM.cpp)
+target_link_libraries(ValidationLPMApp PRIVATE ToySimCore)
+
 # ==============================================================================
 # 6. CTest Registration
 # ==============================================================================
@@ -96,3 +102,4 @@ enable_testing()
 add_test(NAME Stage7b_Relaxation COMMAND ValidationRelaxApp quick)
 add_test(NAME Stage7c_Scattering COMMAND ValidationScatteringApp quick)
 add_test(NAME Stage8_MuonCapture COMMAND ValidationMuonCaptureApp quick)
+add_test(NAME Stage9_LPM COMMAND ValidationLPMApp quick)
